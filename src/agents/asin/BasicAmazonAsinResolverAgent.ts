@@ -1,9 +1,10 @@
 import { getAmazonBrowserClient } from '@/clients/amazonBrowserClient';
 import { getSupabase } from '@/clients/supabaseClient';
 import { logger } from '@/utils/logger';
-import { makeResult, persistAgentResult } from '@/agents/baseAgent';
+import { makeResult, persistAgentResult, recordRejection } from '@/agents/baseAgent';
 import { amazonUrlFromAsin } from '@/utils/normalize';
 import { clamp } from '@/utils/scoring';
+import { RejectionReason } from '@/utils/rejectionReasons';
 import type { AgentResult } from '@/types/agent';
 import type { ProductCandidate } from '@/types/product';
 
@@ -29,14 +30,35 @@ export class BasicAmazonAsinResolverAgent {
     const amazon = getAmazonBrowserClient();
     const supabase = getSupabase();
 
-    const hit = await amazon.resolveByTitle(candidate.productTitleRaw);
-    if (!hit) {
+    if (!amazon.isImplemented) {
+      const reasonCode = RejectionReason.AMAZON_RESOLUTION_NOT_IMPLEMENTED;
+      await recordRejection(candidate.ottoProductId, 'asin_resolution', reasonCode, {
+        note: 'Real Amazon browser automation not yet wired up. Enable OTTO_MOCK_MODE=true to exercise downstream stages locally.',
+      });
       const result = makeResult<AsinResolverData>(
         this.name,
         candidate.ottoProductId,
         'fail',
         0,
-        ['No Amazon match found for product title'],
+        [reasonCode],
+        { confidence: 0 },
+      );
+      await persistAgentResult(result, runId);
+      return result;
+    }
+
+    const hit = await amazon.resolveByTitle(candidate.productTitleRaw);
+    if (!hit) {
+      const reasonCode = RejectionReason.ASIN_NOT_RESOLVED;
+      await recordRejection(candidate.ottoProductId, 'asin_resolution', reasonCode, {
+        productTitleRaw: candidate.productTitleRaw,
+      });
+      const result = makeResult<AsinResolverData>(
+        this.name,
+        candidate.ottoProductId,
+        'fail',
+        0,
+        [reasonCode],
         { confidence: 0 },
       );
       await persistAgentResult(result, runId);

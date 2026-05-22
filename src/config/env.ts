@@ -52,6 +52,7 @@ export const env = {
   },
   runtime: {
     mockMode: bool('OTTO_MOCK_MODE', false),
+    realEbayDiscovery: bool('OTTO_REAL_EBAY_DISCOVERY', false),
     logLevel: str('OTTO_LOG_LEVEL', 'info'),
   },
   exportDir: str('OTTO_EXPORT_DIR', './exports'),

@@ -40,6 +40,14 @@ export interface AmazonSearchHit {
 }
 
 export interface AmazonBrowserClient {
+  /**
+   * False when the underlying implementation is a placeholder (no real
+   * browser automation wired up).  Callers should surface this as
+   * `AMAZON_RESOLUTION_NOT_IMPLEMENTED` instead of silently failing.
+   * True only when mock mode supplies deterministic synthetic data, or
+   * when a real Playwright-backed client lands.
+   */
+  readonly isImplemented: boolean;
   searchByKeyword(keyword: string, limit?: number): Promise<AmazonSearchHit[]>;
   resolveByTitle(title: string): Promise<AmazonSearchHit | null>;
   getProduct(asin: string, zipCode?: string): Promise<AmazonProductSnapshot | null>;
@@ -48,6 +56,9 @@ export interface AmazonBrowserClient {
 
 class PlaceholderAmazonBrowserClient implements AmazonBrowserClient {
   private readonly log = logger.child('amazonBrowserClient');
+  get isImplemented(): boolean {
+    return env.runtime.mockMode;
+  }
 
   async searchByKeyword(keyword: string, limit = 5): Promise<AmazonSearchHit[]> {
     if (env.runtime.mockMode) {

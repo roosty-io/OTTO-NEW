@@ -1,9 +1,10 @@
 import { v4 as uuidv4 } from 'uuid';
-import { getEbayClient } from '@/clients/ebayClient';
+import { getEbayClient, type EbayBrowseItem, type EbaySearchResult } from '@/clients/ebayClient';
 import { getSupabase } from '@/clients/supabaseClient';
 import { logger } from '@/utils/logger';
 import { clamp } from '@/utils/scoring';
-import { persistAgentLog } from '@/agents/baseAgent';
+import { persistAgentLog, recordRejection } from '@/agents/baseAgent';
+import { RejectionReason } from '@/utils/rejectionReasons';
 import type { ProductCandidate } from '@/types/product';
 
 export interface DiscoveryInput {
@@ -13,8 +14,17 @@ export interface DiscoveryInput {
   categoryIds?: string[];
 }
 
+export interface KeywordDiscoveryStats {
+  keyword: string;
+  fetched: number;
+  inserted: number;
+  rejected: number;
+  apiError?: { code: string; message: string };
+}
+
 export interface DiscoveryOutput {
   candidates: ProductCandidate[];
+  perKeyword: KeywordDiscoveryStats[];
 }
 
 export class EbayKeywordDiscoveryAgent {
@@ -25,14 +35,80 @@ export class EbayKeywordDiscoveryAgent {
     const ebay = getEbayClient();
     const supabase = getSupabase();
     const out: ProductCandidate[] = [];
-    const limit = input.limitPerKeyword ?? 10;
+    const perKeyword: KeywordDiscoveryStats[] = [];
+    const limit = input.limitPerKeyword ?? 50;
 
     for (const keyword of input.keywords) {
       this.log.info('Searching eBay', { keyword, limit });
-      const items = await ebay.search(keyword, { limit, categoryIds: input.categoryIds });
+      const result: EbaySearchResult = await ebay.search(keyword, { limit, categoryIds: input.categoryIds });
+      const stats: KeywordDiscoveryStats = { keyword, fetched: 0, inserted: 0, rejected: 0 };
+
+      if (result.error) {
+        stats.apiError = { code: result.error.code, message: result.error.message };
+        this.log.error('eBay search returned error', {
+          keyword,
+          code: result.error.code,
+          message: result.error.message,
+        });
+        await persistAgentLog({
+          agentName: this.name,
+          runId: input.discoveryRunId,
+          level: 'error',
+          message: `eBay search error: ${result.error.code}`,
+          data: { keyword, ...result.error },
+        });
+        await recordRejection(
+          keywordSentinelId(keyword),
+          'discovery',
+          RejectionReason.EBAY_API_ERROR,
+          { keyword, ...result.error },
+        );
+        perKeyword.push(stats);
+        continue;
+      }
+
+      const items = result.items;
+      stats.fetched = items.length;
       this.log.info('eBay search complete', { keyword, count: items.length });
 
+      if (items.length === 0) {
+        await persistAgentLog({
+          agentName: this.name,
+          runId: input.discoveryRunId,
+          level: 'warn',
+          message: 'eBay returned 0 candidates',
+          data: { keyword },
+        });
+        await recordRejection(
+          keywordSentinelId(keyword),
+          'discovery',
+          RejectionReason.NO_CANDIDATES_FOUND,
+          { keyword },
+        );
+        perKeyword.push(stats);
+        continue;
+      }
+
       for (const item of items) {
+        const validation = validateRawItem(item);
+        if (validation.rejection) {
+          stats.rejected++;
+          await recordRejection(
+            `EBAY::${item.itemId ?? 'unknown'}`,
+            'discovery',
+            validation.rejection,
+            { keyword, itemId: item.itemId, title: item.title },
+          );
+          await persistAgentLog({
+            agentName: this.name,
+            runId: input.discoveryRunId,
+            level: 'warn',
+            message: `Raw candidate rejected: ${validation.rejection}`,
+            data: { keyword, itemId: item.itemId },
+          });
+          continue;
+        }
+
         const ottoProductId = `OTTO-${uuidv4()}`;
         const priceHint = item.price ? Number(item.price.value) : undefined;
         const candidate: ProductCandidate = {
@@ -48,6 +124,7 @@ export class EbayKeywordDiscoveryAgent {
           discoveryScore: discoveryScoreFor(item),
         };
         out.push(candidate);
+        stats.inserted++;
 
         try {
           await supabase.from('raw_candidates').insert({
@@ -77,16 +154,31 @@ export class EbayKeywordDiscoveryAgent {
           data: { keyword, title: candidate.productTitleRaw },
         });
       }
+
+      perKeyword.push(stats);
     }
 
-    return { candidates: out };
+    return { candidates: out, perKeyword };
   }
 }
 
-function discoveryScoreFor(item: {
-  seller?: { feedbackPercentage?: string; feedbackScore?: number };
-  topRatedBuyingExperience?: boolean;
-}): number {
+function keywordSentinelId(keyword: string): string {
+  return `KEYWORD::${keyword.replace(/\s+/g, '_').toLowerCase()}`;
+}
+
+function validateRawItem(item: EbayBrowseItem): { rejection?: string } {
+  if (!item || typeof item !== 'object') return { rejection: RejectionReason.BAD_SOURCE_DATA };
+  if (!item.title || typeof item.title !== 'string' || item.title.trim().length === 0) {
+    return { rejection: RejectionReason.MISSING_TITLE };
+  }
+  if (!item.itemWebUrl) return { rejection: RejectionReason.BAD_SOURCE_DATA };
+  if (!item.categories || item.categories.length === 0 || !item.categories[0]?.categoryName) {
+    return { rejection: RejectionReason.MISSING_CATEGORY };
+  }
+  return {};
+}
+
+function discoveryScoreFor(item: EbayBrowseItem): number {
   let score = 50;
   const fb = Number(item.seller?.feedbackPercentage ?? 0);
   if (Number.isFinite(fb)) score += (fb - 95) * 2;

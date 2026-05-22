@@ -20,7 +20,14 @@ export class EbayDemandScoringAgent {
 
   async run(input: DemandInput): Promise<AgentResult<DemandScoreBundle>> {
     const ebay = getEbayClient();
-    const items = await ebay.search(input.keyword, { limit: 30 });
+    const searchResult = await ebay.search(input.keyword, { limit: 30 });
+    if (searchResult.error) {
+      this.log.warn('Demand scoring degraded - eBay error', {
+        keyword: input.keyword,
+        code: searchResult.error.code,
+      });
+    }
+    const items = searchResult.items;
     const bundle = this.score(items, input.amazonPrice);
 
     const supabase = getSupabase();

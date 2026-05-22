@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from 'axios';
+import axios, { AxiosInstance, AxiosError } from 'axios';
 import { env } from '@/config/env';
 import { logger } from '@/utils/logger';
 
@@ -24,9 +24,26 @@ export interface EbaySearchOptions {
   categoryIds?: string[];
 }
 
+export type EbayErrorCode =
+  | 'MISSING_CREDENTIALS'
+  | 'TOKEN_EXPIRED'
+  | 'RATE_LIMITED'
+  | 'NETWORK_TIMEOUT'
+  | 'MALFORMED_RESPONSE'
+  | 'UPSTREAM_ERROR';
+
+export interface EbaySearchResult {
+  items: EbayBrowseItem[];
+  error?: { code: EbayErrorCode; message: string; httpStatus?: number };
+}
+
 const BASE_URL = 'https://api.ebay.com';
 const OAUTH_URL = 'https://api.ebay.com/identity/v1/oauth2/token';
 const SCOPE = 'https://api.ebay.com/oauth/api_scope';
+const SEARCH_PATH = '/buy/browse/v1/item_summary/search';
+
+const MAX_RETRIES = 3;
+const BASE_BACKOFF_MS = 750;
 
 export class EbayClient {
   private http: AxiosInstance;
@@ -42,54 +59,139 @@ export class EbayClient {
     }
   }
 
-  private async ensureToken(): Promise<string> {
-    if (this.token && Date.now() < this.tokenExpiresAt - 60_000) return this.token;
+  /**
+   * Decide whether this call should return mocked data. Mock mode is bypassed
+   * when OTTO_REAL_EBAY_DISCOVERY=true so callers can force live API hits.
+   */
+  private shouldUseMock(): boolean {
+    if (env.runtime.realEbayDiscovery) return false;
+    return env.runtime.mockMode;
+  }
+
+  private hasCredentials(): boolean {
+    return Boolean(env.ebay.oauthToken || (env.ebay.clientId && env.ebay.clientSecret));
+  }
+
+  private async ensureToken(forceRefresh = false): Promise<string> {
+    if (!forceRefresh && this.token && Date.now() < this.tokenExpiresAt - 60_000) return this.token;
     if (!env.ebay.clientId || !env.ebay.clientSecret) {
-      throw new Error('EBAY_CLIENT_ID / EBAY_CLIENT_SECRET are required to mint a Browse API token.');
+      throw new EbayClientError('MISSING_CREDENTIALS', 'EBAY_CLIENT_ID / EBAY_CLIENT_SECRET are required to mint a Browse API token.');
     }
     const basic = Buffer.from(`${env.ebay.clientId}:${env.ebay.clientSecret}`).toString('base64');
     const body = new URLSearchParams({ grant_type: 'client_credentials', scope: SCOPE });
-    const res = await axios.post(OAUTH_URL, body.toString(), {
-      headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    });
-    this.token = res.data.access_token as string;
-    this.tokenExpiresAt = Date.now() + (res.data.expires_in as number) * 1000;
-    return this.token;
+    try {
+      const res = await axios.post(OAUTH_URL, body.toString(), {
+        headers: { Authorization: `Basic ${basic}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        timeout: 10000,
+      });
+      this.token = res.data.access_token as string;
+      this.tokenExpiresAt = Date.now() + (res.data.expires_in as number) * 1000;
+      return this.token;
+    } catch (err) {
+      const axErr = err as AxiosError;
+      throw new EbayClientError('UPSTREAM_ERROR', `OAuth token mint failed: ${axErr.message}`, axErr.response?.status);
+    }
   }
 
-  async search(keyword: string, opts: EbaySearchOptions = {}): Promise<EbayBrowseItem[]> {
-    if (env.runtime.mockMode) {
-      return mockSearchResults(keyword, opts.limit ?? 5);
+  async search(keyword: string, opts: EbaySearchOptions = {}): Promise<EbaySearchResult> {
+    if (this.shouldUseMock()) {
+      return { items: mockSearchResults(keyword, opts.limit ?? 5) };
     }
-    if (!env.ebay.clientId && !env.ebay.oauthToken) {
-      this.log.warn('No eBay credentials present; returning empty result set. Set OTTO_MOCK_MODE=true for test data.');
-      return [];
+    if (!this.hasCredentials()) {
+      return {
+        items: [],
+        error: {
+          code: 'MISSING_CREDENTIALS',
+          message: 'eBay credentials not configured. Set EBAY_CLIENT_ID and EBAY_CLIENT_SECRET (or EBAY_OAUTH_TOKEN).',
+        },
+      };
     }
-    const token = await this.ensureToken();
+
+    const marketplace = opts.marketplaceId ?? env.pipeline.defaultMarketplaceTarget ?? 'EBAY_US';
     const params: Record<string, string> = {
       q: keyword,
-      limit: String(opts.limit ?? 20),
+      limit: String(Math.min(Math.max(opts.limit ?? 50, 1), 200)),
     };
     if (opts.categoryIds && opts.categoryIds.length > 0) {
       params.category_ids = opts.categoryIds.join(',');
     }
-    const marketplace = opts.marketplaceId ?? env.pipeline.defaultMarketplaceTarget ?? 'EBAY_US';
-    try {
-      const res = await this.http.get('/buy/browse/v1/item_summary/search', {
-        params,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'X-EBAY-C-MARKETPLACE-ID': marketplace,
-          'Content-Type': 'application/json',
-        },
-      });
-      const items = (res.data?.itemSummaries ?? []) as EbayBrowseItem[];
-      return items;
-    } catch (err) {
-      this.log.error('eBay Browse search failed', { keyword, err: (err as Error).message });
-      return [];
+
+    let lastErr: { code: EbayErrorCode; message: string; httpStatus?: number } | undefined;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const token = await this.ensureToken(attempt > 1 && lastErr?.code === 'TOKEN_EXPIRED');
+        const res = await this.http.get(SEARCH_PATH, {
+          params,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'X-EBAY-C-MARKETPLACE-ID': marketplace,
+            'Content-Type': 'application/json',
+          },
+        });
+        if (!res.data || typeof res.data !== 'object') {
+          return { items: [], error: { code: 'MALFORMED_RESPONSE', message: 'eBay returned non-JSON body' } };
+        }
+        const items = (res.data.itemSummaries ?? []) as EbayBrowseItem[];
+        if (!Array.isArray(items)) {
+          return { items: [], error: { code: 'MALFORMED_RESPONSE', message: 'itemSummaries is not an array' } };
+        }
+        return { items };
+      } catch (err) {
+        if (err instanceof EbayClientError) {
+          lastErr = { code: err.code, message: err.message, httpStatus: err.httpStatus };
+          if (err.code === 'MISSING_CREDENTIALS') break;
+          continue;
+        }
+        const axErr = err as AxiosError;
+        const status = axErr.response?.status;
+        const code: EbayErrorCode = mapHttpToCode(status, axErr.code);
+        lastErr = {
+          code,
+          message: `eBay search failed: ${axErr.message}`,
+          httpStatus: status,
+        };
+        this.log.warn('eBay Browse search error', {
+          keyword,
+          attempt,
+          code,
+          httpStatus: status,
+          message: axErr.message,
+        });
+
+        // Token may have been revoked.  Force a refresh on the next loop.
+        if (status === 401) {
+          this.token = undefined;
+          this.tokenExpiresAt = 0;
+        }
+
+        if (!isRetryable(code) || attempt === MAX_RETRIES) break;
+        await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt - 1));
+      }
     }
+
+    return { items: [], error: lastErr ?? { code: 'UPSTREAM_ERROR', message: 'Unknown eBay error' } };
   }
+}
+
+class EbayClientError extends Error {
+  constructor(public code: EbayErrorCode, message: string, public httpStatus?: number) {
+    super(message);
+  }
+}
+
+function mapHttpToCode(status: number | undefined, axiosCode: string | undefined): EbayErrorCode {
+  if (axiosCode === 'ECONNABORTED' || axiosCode === 'ETIMEDOUT') return 'NETWORK_TIMEOUT';
+  if (status === 401) return 'TOKEN_EXPIRED';
+  if (status === 429) return 'RATE_LIMITED';
+  return 'UPSTREAM_ERROR';
+}
+
+function isRetryable(code: EbayErrorCode): boolean {
+  return code === 'TOKEN_EXPIRED' || code === 'RATE_LIMITED' || code === 'NETWORK_TIMEOUT' || code === 'UPSTREAM_ERROR';
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function mockSearchResults(keyword: string, limit: number): EbayBrowseItem[] {

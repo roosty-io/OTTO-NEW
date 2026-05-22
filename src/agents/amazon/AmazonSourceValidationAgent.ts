@@ -6,6 +6,7 @@ import { logger } from '@/utils/logger';
 import { detectAmazonBasics, detectMultipack, detectRenewed } from '@/utils/normalize';
 import { clamp } from '@/utils/scoring';
 import { makeResult, persistAgentResult, recordRejection } from '@/agents/baseAgent';
+import { RejectionReason } from '@/utils/rejectionReasons';
 import type { AgentResult } from '@/types/agent';
 
 export interface AmazonValidationInput {
@@ -37,6 +38,27 @@ export class AmazonSourceValidationAgent {
     const zip = env.pipeline.defaultZipCode;
     const maxDays = THRESHOLDS.DEFAULT_MAX_DELIVERY_DAYS;
 
+    if (!amazon.isImplemented) {
+      const data: AmazonValidationData = {
+        inStock: false,
+        hasSourcePrice: false,
+        isRenewedOrRefurbished: false,
+        isAmazonBasics: false,
+        isBundleOrMultipack: false,
+        withinDeliveryWindow: false,
+        passed: false,
+        reasons: [RejectionReason.AMAZON_VALIDATION_UNAVAILABLE],
+      };
+      await this.persist(ottoProductId, asin, data);
+      await recordRejection(ottoProductId, 'amazon_source', RejectionReason.AMAZON_VALIDATION_UNAVAILABLE, {
+        note: 'Real Amazon browser automation not yet wired up.',
+        asin,
+      });
+      const r = makeResult(this.name, ottoProductId, 'fail', 0, data.reasons, data);
+      await persistAgentResult(r, runId);
+      return r;
+    }
+
     const snap = await amazon.getProduct(asin, zip);
     if (!snap) {
       const data: AmazonValidationData = {
@@ -50,7 +72,7 @@ export class AmazonSourceValidationAgent {
         reasons: ['Could not fetch Amazon product snapshot'],
       };
       await this.persist(ottoProductId, asin, data);
-      await recordRejection(ottoProductId, 'amazon_source', 'no_snapshot');
+      await recordRejection(ottoProductId, 'amazon_source', RejectionReason.AMAZON_VALIDATION_UNAVAILABLE, { asin });
       const r = makeResult(this.name, ottoProductId, 'fail', 0, data.reasons, data);
       await persistAgentResult(r, runId);
       return r;
