@@ -77,6 +77,101 @@ npm run test:asin-resolver -- "ceramic plant pot" "rolling cart organizer"
   and `accepted=true|false`.
 - One-time setup: `npx playwright install chromium`.
 
+### How to run the first real QA batch
+
+Before scaling, run a small real end-to-end batch and review the manual
+QA CSV.  The QA script wraps the full real chain (eBay discovery -> ASIN
+resolution -> Amazon source validation -> eBay demand scoring ->
+compliance council -> cost -> final validation -> CSV export) with safe
+defaults.
+
+```bash
+# Required env (in .env or shell):
+#   EBAY_CLIENT_ID + EBAY_CLIENT_SECRET  (or EBAY_OAUTH_TOKEN)
+# One-time setup:
+npx playwright install chromium
+
+# Default: 5 seed keywords x 25 candidates each
+npm run run:real-qa
+
+# Smaller smoke batch
+npm run run:real-qa -- --limit=10
+
+# Custom keywords
+npm run run:real-qa -- --keywords="bamboo drawer divider,rolling utility cart"
+
+# Custom keywords + smaller limit
+npm run run:real-qa -- --limit=10 --keywords="under sink organizer,garage storage rack"
+```
+
+The script prints a full summary including:
+- `discovery_run_id`, `export_batch_id`
+- stage-by-stage counts (raw / ASIN resolved + failed / Amazon source
+  valid + failed / demand passed + failed / compliance passed + failed /
+  cost calculated / final validated + rejected / exported)
+- end-to-end pass rate
+- rejection-code breakdown (e.g. `ASIN_NOT_RESOLVED: 42`,
+  `LOW_SELL_WITHIN_30_DAYS_CONFIDENCE: 21`, `COMPLIANCE_HARD_BLOCK: 3`)
+- top 10 passing products with ASIN / URL / title / brand / price /
+  delivery days / 30d confidence / stagnation / policy risk / final
+  score
+- both the main export CSV path and the manual QA review CSV path
+
+**Two CSVs are written under `./exports/`:**
+
+1. `otto-validated-<timestamp>.csv` - the canonical 45-column export.
+2. `otto_manual_qa_review_<YYYY-MM-DD>.csv` - a slim sheet for human
+   review with these columns:
+
+   ```
+   otto_product_id, asin, amazon_url, product_title, brand,
+   amazon_price, delivery_days, sell_within_30_days_confidence,
+   stagnation_risk_score, policy_risk_score, final_validation_score,
+   would_list_yes_no, asin_real_yes_no, demand_makes_sense_yes_no,
+   low_risk_yes_no, notes
+   ```
+
+   The last five columns are blank for a human reviewer.
+
+**How to interpret the pass rates**
+
+- **Raw -> final validated < 5%**: very strict.  Expected for V1 since
+  every gate (real ASIN match >= 75 conf, in-stock + <= 10d delivery, no
+  Amazon Basics / multipack / restricted, demand 30d-conf >= 70 + low
+  stagnation + relevant comparables >= 5, policy risk <= 35) must
+  succeed simultaneously.
+- **Raw -> final validated > 20%**: suspiciously loose.  Inspect the
+  rejection breakdown - a missing gate code suggests a regression.
+- **`ASIN_NOT_RESOLVED` + `LOW_CONFIDENCE_ASIN_MATCH` dominate**: most
+  eBay candidates didn't have a clean Amazon counterpart.  Expand
+  keywords or revisit query strategies in `ebayQueryBuilder`.
+- **`DELIVERY_TOO_LONG` / `AMAZON_PRICE_MISSING` spike**: marketplace or
+  scraping issue on a specific seller / category.
+- **`COMPLIANCE_HARD_BLOCK` spike**: keyword surface is brand-heavy.
+  Pick safer seeds (organizer / storage / utility) for the first QA.
+
+**How to manually review the QA CSV**
+
+1. Open `otto_manual_qa_review_<date>.csv` in Sheets / Excel.
+2. For each row, open the `amazon_url` and check:
+   - is the ASIN real and the page the actual product?
+   - does the title match what we discovered on eBay?
+   - is the price still what we captured?
+   - does the demand "feel right" - would this product realistically
+     sell on eBay within 30 days?
+   - any policy / brand / IP risk you'd refuse to list?
+3. Fill the five reviewer columns with `yes` / `no`.  Add notes for
+   borderline calls.
+
+**Target approval rate before scaling**
+
+Target a `would_list_yes_no = yes` rate of **>= 70%** on the manual QA
+CSV before raising `--limit` or removing keyword filters.  If approval
+is below 70%, tune the failing axis (most often `policyRiskScore` or
+`demandScore` weights, occasionally an ASIN resolver false-positive) and
+re-run a fresh batch.  Do not scale until the manual approval rate
+sustains above 70% for two consecutive batches.
+
 ### Compliance smoke test
 
 ```bash
