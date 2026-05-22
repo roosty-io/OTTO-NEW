@@ -85,18 +85,19 @@ async function main(): Promise<void> {
     const amazonResult = await amazonAgent.run({
       ottoProductId: candidate.ottoProductId,
       asin: asinResult.data.asin,
+      amazonUrl: asinResult.data.amazonUrl,
       runId,
     });
     if (amazonResult.status !== 'pass') continue;
     stats.amazonValid++;
-    const snap = amazonResult.data.snapshot;
-    const amazonPrice = snap?.price ?? asinResult.data.price ?? candidate.priceHint ?? 0;
+    const amazonData = amazonResult.data;
+    const amazonPrice = amazonData.price ?? asinResult.data.price ?? candidate.priceHint ?? 0;
 
     // 4. Demand
     const demandResult = await demandAgent.run({
       ottoProductId: candidate.ottoProductId,
       keyword: candidate.keyword,
-      productTitle: snap?.title ?? candidate.productTitleRaw,
+      productTitle: amazonData.productTitle ?? candidate.productTitleRaw,
       amazonPrice,
       runId,
     });
@@ -109,11 +110,10 @@ async function main(): Promise<void> {
     const complianceResult = await complianceAgent.run({
       ctx: {
         ottoProductId: candidate.ottoProductId,
-        title: snap?.title ?? candidate.productTitleRaw,
-        brand: snap?.brand ?? candidate.brandHint,
-        amazonCategory: snap?.category,
+        title: amazonData.productTitle ?? candidate.productTitleRaw,
+        brand: amazonData.brand ?? candidate.brandHint,
+        amazonCategory: amazonData.categoryBreadcrumbs.join(' > ') || undefined,
         ebayCategoryHint: candidate.categoryHint,
-        variationAttributes: snap?.variationAttributes,
       },
       runId,
     });
@@ -143,16 +143,15 @@ async function main(): Promise<void> {
       ottoProductId: candidate.ottoProductId,
       asin: asinResult.data.asin,
       amazonUrl: asinResult.data.amazonUrl ?? `https://www.amazon.com/dp/${asinResult.data.asin}`,
-      productTitle: snap?.title ?? candidate.productTitleRaw,
-      brand: snap?.brand,
-      amazonCategory: snap?.category,
-      variationAttributes: snap?.variationAttributes,
+      productTitle: amazonData.productTitle ?? candidate.productTitleRaw,
+      brand: amazonData.brand,
+      amazonCategory: amazonData.categoryBreadcrumbs.join(' > ') || undefined,
       amazonPrice,
-      couponDetected: snap?.couponDetected ?? false,
-      deliveryDays: snap?.deliveryDays,
-      stockStatus: snap?.inStock ? 'in_stock' : 'unknown',
-      rating: snap?.rating,
-      reviewCount: snap?.reviewCount,
+      couponDetected: amazonData.couponDetected,
+      deliveryDays: amazonData.estimatedDeliveryDays,
+      stockStatus: amazonData.stockStatus,
+      rating: amazonData.rating,
+      reviewCount: amazonData.reviewCount,
       sourceConfidenceScore: asinResult.score,
       productMatchType: asinResult.score >= 80 ? 'exact' : 'similar',
       opportunityType: 'direct_match',

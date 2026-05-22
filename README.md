@@ -77,6 +77,33 @@ npm run test:asin-resolver -- "ceramic plant pot" "rolling cart organizer"
   and `accepted=true|false`.
 - One-time setup: `npx playwright install chromium`.
 
+### Amazon source-validation smoke test
+
+```bash
+# Default ASINs (from earlier resolver runs)
+npm run test:amazon-source
+
+# Specific ASINs
+npm run test:amazon-source -- B0C6MC5N19 B0DD47PMQQ
+
+# Pull accepted ASINs from the database
+npm run test:amazon-source -- --from-db
+```
+
+- Opens each canonical `/dp/<ASIN>` page in headless Chromium.
+- Extracts title, brand, price + currency, availability, buy-now / add-to-cart
+  presence, delivery text (parsed into days + window), seller / ships-from /
+  sold-by, condition, rating, review count, coupons, bullets, breadcrumbs,
+  and warning badges.
+- Runs the full hard-exclusion ladder (out-of-stock, no price, delivery > 10d,
+  Amazon Basics, used / renewed / refurbished, bundle / multipack,
+  restricted signals) plus the `scoreAmazonSource` heuristic.
+- Persists every result to `amazon_source_checks` with `source_valid` /
+  `source_validity_score` / `rejection_reason`.
+- The `2 tier` / `3 tier` guardrail is enforced - organizer products that
+  describe themselves as "2 tier" / "3-layer" are never treated as
+  multipacks.
+
 The pipeline writes a CSV into `./exports/otto-validated-<timestamp>.csv`
 and prints a stage-by-stage summary.
 
@@ -105,16 +132,22 @@ AMAZON_IGNORE_HTTPS_ERRORS=false    # dev/test only - never enable in production
 
 ### Real-mode limitations (V1)
 
-- **Amazon ASIN resolution** is live (Playwright Chromium) and produces
-  real ASIN candidates per eBay candidate, scored on title similarity,
-  keyword overlap, brand risk, and private-label heuristics. Multi-pack,
-  bundle, renewed, refurbished, and Amazon Basics matches are hard-excluded;
+- **Amazon ASIN resolution** is live (Playwright Chromium): real ASIN
+  candidates per eBay candidate, scored on title similarity, keyword
+  overlap, brand risk, and private-label heuristics. Multi-pack, bundle,
+  renewed, refurbished, and Amazon Basics matches are hard-excluded;
   low-confidence matches are rejected with `LOW_CONFIDENCE_ASIN_MATCH`.
-- **Amazon source page validation** (stock / delivery / variations) is
-  still a placeholder. Candidates with confirmed ASINs are rejected with
-  `AMAZON_VALIDATION_UNAVAILABLE` until that scraper lands.
-- **Keepa** and **Zik** clients are placeholders - their data is not yet
-  folded into demand or compliance scoring.
+- **Amazon source-page validation** is live (Playwright Chromium): real
+  product pages are opened, prices / stock / delivery / condition /
+  coupons / breadcrumbs / warning badges are extracted, and products are
+  rejected with explicit codes (`AMAZON_OUT_OF_STOCK`,
+  `AMAZON_PRICE_MISSING`, `DELIVERY_TOO_LONG`, `BUNDLE_OR_MULTIPACK_EXCLUDED`,
+  `USED_RENEWED_REFURBISHED`, `AMAZON_BASICS_EXCLUDED`, `HAZMAT_SIGNAL`,
+  `MEDICAL_DEVICE_SIGNAL`, `WEAPON_SIGNAL`, `FOOD_SUPPLEMENT_SIGNAL`,
+  `RESTRICTED_PRODUCT_SIGNAL`, `AMAZON_BLOCKED_OR_CAPTCHA`,
+  `AMAZON_PAGE_UNAVAILABLE`).
+- **Keepa** and **Zik** clients are still placeholders - their data is
+  not yet folded into demand or compliance scoring.
 - **Demand scoring** runs against real eBay Browse data but until the Zik
   signals are wired in, the heuristics are based on competitor listings
   alone.

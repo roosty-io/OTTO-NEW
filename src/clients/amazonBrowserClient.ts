@@ -66,12 +66,56 @@ export interface AmazonProductSnapshot {
   raw: Record<string, unknown>;
 }
 
+export type ValidationErrorCode =
+  | 'PAGE_UNAVAILABLE'
+  | 'NAVIGATION_FAILED'
+  | 'TIMEOUT'
+  | 'BLOCKED_OR_CAPTCHA'
+  | 'BROWSER_LAUNCH_FAILED'
+  | 'PARSE_FAILED';
+
+export interface AmazonProductPageData {
+  asin: string;
+  amazonUrl: string;
+  pageLoaded: boolean;
+  blockedOrCaptcha: boolean;
+  productTitle?: string;
+  brand?: string;
+  price?: number;
+  priceCurrency?: string;
+  availabilityText?: string;
+  inStock?: boolean;
+  buyable?: boolean;
+  deliveryText?: string;
+  estimatedDeliveryDays?: number;
+  deliveryParseConfidence?: 'high' | 'medium' | 'low' | 'none';
+  sellerText?: string;
+  shipsFromText?: string;
+  soldByText?: string;
+  conditionText?: string;
+  rating?: number;
+  reviewCount?: number;
+  couponDetected?: boolean;
+  couponText?: string;
+  productBullets: string[];
+  productDescriptionSnippet?: string;
+  categoryBreadcrumbs: string[];
+  warningBadges: string[];
+  restrictedSignals: string[];
+  validationErrorCode?: ValidationErrorCode;
+}
+
 export interface AmazonBrowserClient {
   readonly isImplemented: boolean;
   search(query: string, limit?: number): Promise<AmazonSearchResult>;
   /** Legacy single-best lookup, retained for any older caller. */
   resolveByTitle(title: string): Promise<AmazonSearchHit | null>;
   getProduct(asin: string, zipCode?: string): Promise<AmazonProductSnapshot | null>;
+  validateProductPage(
+    asin: string,
+    amazonUrl: string,
+    options?: { zipCode?: string },
+  ): Promise<AmazonProductPageData>;
   close(): Promise<void>;
 }
 
@@ -125,6 +169,39 @@ class MockAmazonBrowserClient implements AmazonBrowserClient {
       variationAttributes: {},
       couponDetected: seed % 3 === 0,
       raw: { source: 'mock' },
+    };
+  }
+  async validateProductPage(asin: string, amazonUrl: string): Promise<AmazonProductPageData> {
+    const seed = asin.charCodeAt(asin.length - 1);
+    const deliveryDays = (seed % 9) + 2; // 2-10 days, always inside the window
+    return {
+      asin,
+      amazonUrl,
+      pageLoaded: true,
+      blockedOrCaptcha: false,
+      productTitle: `Mock product ${asin}`,
+      brand: 'OttoMock',
+      price: 12 + (seed % 30),
+      priceCurrency: 'USD',
+      availabilityText: 'In Stock',
+      inStock: true,
+      buyable: true,
+      deliveryText: `FREE delivery in ${deliveryDays} days`,
+      estimatedDeliveryDays: deliveryDays,
+      deliveryParseConfidence: 'medium',
+      sellerText: 'Amazon.com',
+      shipsFromText: 'Amazon',
+      soldByText: 'Amazon.com',
+      conditionText: 'New',
+      rating: 4.2 + ((seed % 5) / 10),
+      reviewCount: 150 + seed * 7,
+      couponDetected: seed % 3 === 0,
+      couponText: seed % 3 === 0 ? '5% off coupon' : undefined,
+      productBullets: ['Mock bullet 1', 'Mock bullet 2'],
+      productDescriptionSnippet: 'Mock description',
+      categoryBreadcrumbs: ['Home & Kitchen', 'Storage & Organization'],
+      warningBadges: [],
+      restrictedSignals: [],
     };
   }
   async close(): Promise<void> {
@@ -399,12 +476,281 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
     return r.hits[0] ?? null;
   }
 
+  /** Deprecated. Kept so older callers still compile. */
   async getProduct(_asin: string, _zipCode?: string): Promise<AmazonProductSnapshot | null> {
-    // V1 scope: the resolver agent is what we're shipping. The product
-    // detail page scraper (stock / delivery / variations) will follow.
-    // Returning null causes AmazonSourceValidationAgent to record
-    // AMAZON_VALIDATION_UNAVAILABLE, which is the honest behavior.
     return null;
+  }
+
+  async validateProductPage(
+    asin: string,
+    amazonUrl: string,
+    _options?: { zipCode?: string },
+  ): Promise<AmazonProductPageData> {
+    const canonicalUrl = amazonUrl && /\/dp\//.test(amazonUrl) ? amazonUrl : amazonUrlFromAsin(asin);
+    const empty: AmazonProductPageData = {
+      asin,
+      amazonUrl: canonicalUrl,
+      pageLoaded: false,
+      blockedOrCaptcha: false,
+      productBullets: [],
+      categoryBreadcrumbs: [],
+      warningBadges: [],
+      restrictedSignals: [],
+    };
+
+    const browser = await this.ensureBrowser();
+    if (!browser) {
+      return {
+        ...empty,
+        validationErrorCode: 'BROWSER_LAUNCH_FAILED',
+      };
+    }
+
+    const timeoutMs = env.amazon.searchTimeoutMs;
+    let context: PwContext | null = null;
+    let page: PwPage | null = null;
+    try {
+      context = await browser.newContext({
+        userAgent:
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+          'Chrome/124.0.0.0 Safari/537.36',
+        locale: 'en-US',
+        viewport: { width: 1366, height: 900 },
+        ignoreHTTPSErrors: env.amazon.ignoreHttpsErrors,
+      });
+      page = await context.newPage();
+
+      try {
+        await page.goto(canonicalUrl, { timeout: timeoutMs, waitUntil: 'domcontentloaded' });
+      } catch (err) {
+        const msg = (err as Error).message;
+        const code: ValidationErrorCode = /timeout/i.test(msg) ? 'TIMEOUT' : 'NAVIGATION_FAILED';
+        return { ...empty, validationErrorCode: code };
+      }
+
+      const html = await page.content();
+      if (looksBlocked(html, page.url())) {
+        return { ...empty, blockedOrCaptcha: true, validationErrorCode: 'BLOCKED_OR_CAPTCHA' };
+      }
+
+      const parsed = await this.extractProductPage(page);
+      return {
+        asin,
+        amazonUrl: canonicalUrl,
+        pageLoaded: true,
+        blockedOrCaptcha: false,
+        productTitle: parsed.productTitle ?? undefined,
+        brand: parsed.brand ?? undefined,
+        price: parsePrice(parsed.priceText),
+        priceCurrency: parsePriceCurrency(parsed.priceText),
+        availabilityText: parsed.availabilityText ?? undefined,
+        inStock: inferInStock(parsed.availabilityText, parsed.buyable),
+        buyable: parsed.buyable,
+        deliveryText: parsed.deliveryText ?? undefined,
+        sellerText: parsed.sellerText ?? undefined,
+        shipsFromText: parsed.shipsFromText ?? undefined,
+        soldByText: parsed.soldByText ?? undefined,
+        conditionText: parsed.conditionText ?? undefined,
+        rating: parseRating(parsed.ratingText),
+        reviewCount: parseReviewCount(parsed.reviewCountText),
+        couponDetected: Boolean(parsed.couponText),
+        couponText: parsed.couponText ?? undefined,
+        productBullets: parsed.productBullets,
+        productDescriptionSnippet: parsed.descriptionSnippet ?? undefined,
+        categoryBreadcrumbs: parsed.categoryBreadcrumbs,
+        warningBadges: parsed.warningBadges,
+        restrictedSignals: [],
+      };
+    } catch (err) {
+      return {
+        ...empty,
+        validationErrorCode: 'PARSE_FAILED',
+        availabilityText: `extract failed: ${(err as Error).message}`,
+      };
+    } finally {
+      try { if (page) await page.close(); } catch { /* ignore */ }
+      try { if (context) await context.close(); } catch { /* ignore */ }
+    }
+  }
+
+  private async extractProductPage(page: PwPage): Promise<{
+    productTitle: string | null;
+    brand: string | null;
+    priceText: string | null;
+    availabilityText: string | null;
+    buyable: boolean;
+    deliveryText: string | null;
+    sellerText: string | null;
+    shipsFromText: string | null;
+    soldByText: string | null;
+    conditionText: string | null;
+    ratingText: string | null;
+    reviewCountText: string | null;
+    couponText: string | null;
+    productBullets: string[];
+    descriptionSnippet: string | null;
+    categoryBreadcrumbs: string[];
+    warningBadges: string[];
+  }> {
+    try {
+      return await page.$$eval('body', (els) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const doc = (els as any[])[0] as { querySelector: (s: string) => unknown; querySelectorAll: (s: string) => unknown };
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const $ = (sel: string): any => (doc as any).querySelector(sel);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const $$ = (sel: string): any[] => Array.from((doc as any).querySelectorAll(sel));
+        const text = (el: unknown): string | null => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const e = el as any;
+          if (!e || !e.textContent) return null;
+          const v = String(e.textContent).replace(/\s+/g, ' ').trim();
+          return v.length ? v : null;
+        };
+        const tryAll = (selectors: string[]): string | null => {
+          for (const s of selectors) {
+            const v = text($(s));
+            if (v) return v;
+          }
+          return null;
+        };
+        const productTitle = tryAll(['#productTitle', '#title', 'h1.a-size-large']);
+        const brand = (() => {
+          const b = text($('#bylineInfo'));
+          if (!b) return null;
+          // "Visit the X Store" or "Brand: X"
+          return b
+            .replace(/^Visit the\s+/i, '')
+            .replace(/\s+Store$/i, '')
+            .replace(/^Brand:\s*/i, '')
+            .trim();
+        })();
+        const priceText = tryAll([
+          '.priceToPay .a-offscreen',
+          '#corePrice_feature_div .a-offscreen',
+          '#corePriceDisplay_desktop_feature_div .a-offscreen',
+          '#priceblock_ourprice',
+          '#priceblock_dealprice',
+          '#priceblock_saleprice',
+          '.a-price .a-offscreen',
+        ]);
+        const availabilityText = tryAll([
+          '#availability .a-color-success',
+          '#availability .a-color-state',
+          '#availability span',
+          '#outOfStock',
+        ]);
+        const buyable = Boolean($('#add-to-cart-button') || $('#buy-now-button'));
+        const deliveryText = tryAll([
+          '#deliveryBlockMessage',
+          '#mir-layout-DELIVERY_BLOCK',
+          '[data-csa-c-content-id="DEXUnifiedCXPDM"]',
+          '#ddmDeliveryMessage',
+          '.a-color-success.a-text-bold',
+        ]);
+        const sellerText = tryAll(['#merchant-info', '[data-feature-name="merchantInfoFeature"]']);
+        const shipsFromText = (() => {
+          // Look for "Ships from" label in offer-display rows
+          const labels = $$('.tabular-buybox-text, .a-section.a-spacing-none.a-spacing-top-mini, #offerDisplayFeatures_feature_div');
+          for (const l of labels) {
+            const t = text(l) ?? '';
+            const m = t.match(/Ships from[:\s]+([^\n.|]+?)(?:\.|Sold by|Returns|$)/i);
+            if (m) return m[1].trim();
+          }
+          return null;
+        })();
+        const soldByText = (() => {
+          const labels = $$('.tabular-buybox-text, #offerDisplayFeatures_feature_div, #merchant-info');
+          for (const l of labels) {
+            const t = text(l) ?? '';
+            const m = t.match(/Sold by[:\s]+([^\n.|]+?)(?:\.|Ships from|Returns|$)/i);
+            if (m) return m[1].trim();
+          }
+          return null;
+        })();
+        const conditionText = tryAll([
+          '#condition-display',
+          '#twister-plus-feature-display-condition-row .a-text-bold',
+          '#cmrs-atf-condition_feature_div .a-text-bold',
+        ]);
+        const ratingText = tryAll([
+          '#acrPopover .a-icon-alt',
+          '[data-hook="rating-out-of-text"]',
+          '.AverageCustomerReviews .a-icon-alt',
+          '#averageCustomerReviews .a-icon-alt',
+        ]);
+        const reviewCountText = tryAll([
+          '#acrCustomerReviewText',
+          '[data-hook="total-review-count"]',
+        ]);
+        const couponText = tryAll([
+          '.couponBadge',
+          '#promoPriceBlockMessage_feature_div',
+          '.promoPriceBlockMessageCard_feature_div',
+          '#vpcCouponNotPriceCheckbox_feature_div',
+        ]);
+        const productBullets: string[] = [];
+        for (const li of $$('#feature-bullets li span.a-list-item, #feature-bullets li .a-list-item')) {
+          const t = text(li);
+          if (t && t.length > 1) productBullets.push(t);
+        }
+        const descriptionSnippet = tryAll([
+          '#productDescription p',
+          '#productDescription',
+          '#productOverview_feature_div',
+        ]);
+        const categoryBreadcrumbs: string[] = [];
+        for (const c of $$('#wayfinding-breadcrumbs_feature_div li, #wayfinding-breadcrumbs_container li')) {
+          const t = text(c);
+          if (t && t !== '›' && t !== '/') categoryBreadcrumbs.push(t.replace(/›/g, '').trim());
+        }
+        const warningBadges: string[] = [];
+        for (const w of $$('.a-alert-warning, .a-box-warning, #regulatory_label_feature_div, .a-color-error')) {
+          const t = text(w);
+          if (t && t.length > 0 && t.length < 400) warningBadges.push(t);
+        }
+        return {
+          productTitle,
+          brand,
+          priceText,
+          availabilityText,
+          buyable,
+          deliveryText,
+          sellerText,
+          shipsFromText,
+          soldByText,
+          conditionText,
+          ratingText,
+          reviewCountText,
+          couponText,
+          productBullets,
+          descriptionSnippet,
+          categoryBreadcrumbs,
+          warningBadges,
+        };
+      });
+    } catch (err) {
+      this.log.warn('extractProductPage failed', { err: (err as Error).message });
+      return {
+        productTitle: null,
+        brand: null,
+        priceText: null,
+        availabilityText: null,
+        buyable: false,
+        deliveryText: null,
+        sellerText: null,
+        shipsFromText: null,
+        soldByText: null,
+        conditionText: null,
+        ratingText: null,
+        reviewCountText: null,
+        couponText: null,
+        productBullets: [],
+        descriptionSnippet: null,
+        categoryBreadcrumbs: [],
+        warningBadges: [],
+      };
+    }
   }
 
   async close(): Promise<void> {
@@ -445,11 +791,31 @@ function absoluteAmazonUrl(href: string | null, asin: string): string {
   return amazonUrlFromAsin(asin);
 }
 
-function parsePrice(s: string | null): number | undefined {
+function parsePrice(s: string | null | undefined): number | undefined {
   if (!s) return undefined;
   const m = s.replace(/[^0-9.]/g, '');
   const n = Number(m);
   return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function parsePriceCurrency(s: string | null | undefined): string | undefined {
+  if (!s) return undefined;
+  if (s.includes('$')) return 'USD';
+  if (s.includes('£')) return 'GBP';
+  if (s.includes('€')) return 'EUR';
+  if (/USD/i.test(s)) return 'USD';
+  return undefined;
+}
+
+function inferInStock(availabilityText: string | undefined | null, buyable: boolean | undefined): boolean {
+  const lc = (availabilityText ?? '').toLowerCase();
+  if (lc.includes('in stock')) return true;
+  if (lc.includes('only ') && lc.includes('left in stock')) return true;
+  if (lc.includes('currently unavailable')) return false;
+  if (lc.includes('temporarily out of stock')) return false;
+  if (lc.includes('out of stock')) return false;
+  // Fall back to the buy-button presence.
+  return Boolean(buyable);
 }
 
 function parseRating(s: string | null): number | undefined {
