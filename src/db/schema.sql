@@ -91,13 +91,27 @@ create table if not exists source_signals (
 create table if not exists asin_candidates (
   id uuid primary key default gen_random_uuid(),
   otto_product_id text not null,
+  raw_candidate_id uuid,
   asin text,
+  parent_asin text,
+  child_asin text,
   amazon_url text,
   resolver text,
+  resolver_method text,
   confidence numeric default 0,
   resolved_title text,
   resolved_brand text,
   resolved_price numeric,
+  rating numeric,
+  review_count int,
+  image_url text,
+  product_match_type text,
+  title_similarity_score numeric,
+  keyword_overlap_score numeric,
+  source_confidence_score numeric,
+  final_product_match_confidence numeric,
+  rejection_reason text,
+  accepted boolean not null default false,
   raw_payload jsonb default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
@@ -377,3 +391,5 @@ create index if not exists idx_agent_logs_product on agent_logs(otto_product_id)
 create index if not exists idx_agent_logs_run on agent_logs(discovery_run_id);
 create index if not exists idx_validated_products_validated_at on validated_products(validated_at desc);
 create index if not exists idx_rejected_products_product on rejected_products(otto_product_id);
+create index if not exists idx_asin_candidates_product on asin_candidates(otto_product_id);
+create index if not exists idx_asin_candidates_accepted on asin_candidates(accepted);

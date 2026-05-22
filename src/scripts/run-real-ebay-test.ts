@@ -138,6 +138,11 @@ async function main(): Promise<void> {
       'Amazon browser automation is a placeholder. ASIN resolution and Amazon validation will record ' +
         'AMAZON_RESOLUTION_NOT_IMPLEMENTED / AMAZON_VALIDATION_UNAVAILABLE rejections instead of fabricating data.',
     );
+  } else {
+    log.info(
+      'Amazon ASIN resolver active (Playwright). Source page validation still degrades to ' +
+        'AMAZON_VALIDATION_UNAVAILABLE until the product-detail scraper lands.',
+    );
   }
 
   const validated: ValidatedProduct[] = [];
@@ -333,6 +338,11 @@ function printSummary(stats: Stats, amazonImplemented: boolean): void {
     console.log('        ASIN resolution / Amazon source validation in real mode until');
     console.log('        a real Playwright client is wired up.  All such products were');
     console.log('        recorded with AMAZON_RESOLUTION_NOT_IMPLEMENTED.');
+  } else {
+    console.log('\n  NOTE: Amazon ASIN resolver is live (Playwright). The product-detail');
+    console.log('        page scraper is still pending, so candidates with confirmed ASINs');
+    console.log('        will be rejected at AmazonSourceValidationAgent with');
+    console.log('        AMAZON_VALIDATION_UNAVAILABLE until that lands.');
   }
   console.log('=====================================================\n');
 }

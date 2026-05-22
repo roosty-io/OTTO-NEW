@@ -50,38 +50,74 @@ npm run test:real-ebay -- "stainless lazy susan" "bamboo drawer divider" --limit
 
 - Sets `OTTO_REAL_EBAY_DISCOVERY=true` and `OTTO_MOCK_MODE=false` for the run.
 - Hits the live eBay Browse API for discovery and demand scoring.
-- **Amazon browser automation is not yet implemented.**  Every candidate
-  is recorded with `AMAZON_RESOLUTION_NOT_IMPLEMENTED` / `AMAZON_VALIDATION_UNAVAILABLE`
-  in `rejected_products`.  Nothing reaches the validated CSV in real mode
-  until a real Playwright Amazon client is wired up - the pipeline will
-  not pretend it has.
+- The **ASIN resolver is live** (Playwright Chromium) - real eBay candidates
+  are turned into real Amazon.com ASINs by `BasicAmazonAsinResolverAgent`.
+- The Amazon **product-detail scraper** (stock / delivery / variations) is
+  still pending, so candidates with confirmed ASINs are currently rejected
+  at `AmazonSourceValidationAgent` with `AMAZON_VALIDATION_UNAVAILABLE`.
+  Nothing fake reaches the validated CSV.
 - Exits with code `2` if `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` (or
   `EBAY_OAUTH_TOKEN`) are missing.
+
+### ASIN resolver smoke test
+
+```bash
+# Default: 10 canonical V1 product titles
+npm run test:asin-resolver
+
+# Custom titles
+npm run test:asin-resolver -- "ceramic plant pot" "rolling cart organizer"
+```
+
+- Launches headless Chromium and runs `BasicAmazonAsinResolverAgent` against
+  each title.
+- Prints the input, the generated queries, and either the best matching
+  ASIN / URL / title / match type / confidence or a rejection reason.
+- All attempts are persisted to `asin_candidates` with their score breakdown
+  and `accepted=true|false`.
+- One-time setup: `npx playwright install chromium`.
 
 The pipeline writes a CSV into `./exports/otto-validated-<timestamp>.csv`
 and prints a stage-by-stage summary.
 
 ### Required env vars
 
-| Mode               | Required                                                    |
-|--------------------|-------------------------------------------------------------|
-| Mock               | (none) - set `OTTO_MOCK_MODE=true`                          |
-| Real eBay discovery| `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET`, or `EBAY_OAUTH_TOKEN` |
-| Persistence        | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (otherwise the |
-|                    | client falls back to an in-memory stub)                     |
+| Mode                | Required                                                              |
+|---------------------|-----------------------------------------------------------------------|
+| Mock                | (none) - set `OTTO_MOCK_MODE=true`                                    |
+| Real eBay discovery | `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET`, or `EBAY_OAUTH_TOKEN`        |
+| Real ASIN resolver  | `npx playwright install chromium` (Chromium binary on the machine)    |
+| Persistence         | `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (otherwise the in-memory stub) |
+
+Amazon resolver tunables (all optional, defaults shown):
+
+```
+AMAZON_HEADLESS=true
+AMAZON_SEARCH_TIMEOUT_MS=30000
+AMAZON_MAX_RESULTS_PER_QUERY=10
+AMAZON_MAX_QUERIES_PER_CANDIDATE=4
+AMAZON_PROXY_SERVER=
+AMAZON_PROXY_USERNAME=
+AMAZON_PROXY_PASSWORD=
+AMAZON_DEBUG=false                  # non-headless + slowMo when true
+AMAZON_IGNORE_HTTPS_ERRORS=false    # dev/test only - never enable in production
+```
 
 ### Real-mode limitations (V1)
 
-- **Amazon source validation** uses a placeholder Playwright client.
-  Until that lands, ASIN resolution and Amazon stock / price / delivery
-  checks return `null` and the candidate is rejected with a clear reason
-  rather than fabricated data.
-- **Keepa** and **Zik** clients are also placeholders - their data is
-  not yet folded into demand or compliance scoring.
-- **Demand scoring** still works against real eBay data, but until the
-  Zik signals are wired in the `sell_within_30_days_confidence` /
-  `stagnation_risk_score` heuristics are based only on Browse-API
-  competitor listings.
+- **Amazon ASIN resolution** is live (Playwright Chromium) and produces
+  real ASIN candidates per eBay candidate, scored on title similarity,
+  keyword overlap, brand risk, and private-label heuristics. Multi-pack,
+  bundle, renewed, refurbished, and Amazon Basics matches are hard-excluded;
+  low-confidence matches are rejected with `LOW_CONFIDENCE_ASIN_MATCH`.
+- **Amazon source page validation** (stock / delivery / variations) is
+  still a placeholder. Candidates with confirmed ASINs are rejected with
+  `AMAZON_VALIDATION_UNAVAILABLE` until that scraper lands.
+- **Keepa** and **Zik** clients are placeholders - their data is not yet
+  folded into demand or compliance scoring.
+- **Demand scoring** runs against real eBay Browse data but until the Zik
+  signals are wired in, the heuristics are based on competitor listings
+  alone.
 
 ### Interpreting the summary
 

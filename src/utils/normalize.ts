@@ -35,7 +35,7 @@ export function amazonUrlFromAsin(asin: string): string {
   return `https://www.amazon.com/dp/${asin}`;
 }
 
-const PACK_RE = /\b(\d+)[- ]?(pack|pk|count|ct)\b/i;
+const PACK_RE = /\b(\d+)\s*[- ]?\s*(packs?|pk|counts?|cts?|tiers?|pcs?)\b/i;
 
 export function detectMultipack(title: string): boolean {
   if (!title) return false;

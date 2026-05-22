@@ -9,6 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:pipeline": "ts-node -T -r tsconfig-paths/register src/scripts/run-test-pipeline.ts",
     "test:real-ebay": "ts-node -T -r tsconfig-paths/register src/scripts/run-real-ebay-test.ts",
+    "test:asin-resolver": "ts-node -T -r tsconfig-paths/register src/scripts/test-asin-resolver.ts",
     "export:csv": "ts-node -T -r tsconfig-paths/register src/scripts/export-latest-csv.ts",
     "seed:rules": "ts-node -T -r tsconfig-paths/register src/scripts/seed-rules.ts",
     "db:apply": "ts-node -T -r tsconfig-paths/register src/scripts/apply-schema.ts"

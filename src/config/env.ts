@@ -38,8 +38,18 @@ export const env = {
     apiKey: str('KEEPA_API_KEY'),
   },
   amazon: {
+    // Legacy combined proxy URL (kept for back-compat with V1.0 env files).
     proxy: str('AMAZON_BROWSER_PROXY'),
-    headless: bool('AMAZON_BROWSER_HEADLESS', true),
+    headless: bool('AMAZON_HEADLESS', bool('AMAZON_BROWSER_HEADLESS', true)),
+    searchTimeoutMs: num('AMAZON_SEARCH_TIMEOUT_MS', 30000),
+    maxResultsPerQuery: num('AMAZON_MAX_RESULTS_PER_QUERY', 10),
+    maxQueriesPerCandidate: num('AMAZON_MAX_QUERIES_PER_CANDIDATE', 4),
+    proxyServer: str('AMAZON_PROXY_SERVER'),
+    proxyUsername: str('AMAZON_PROXY_USERNAME'),
+    proxyPassword: str('AMAZON_PROXY_PASSWORD'),
+    debug: bool('AMAZON_DEBUG', false),
+    /** Dev/test escape hatch for environments behind a TLS-intercepting proxy. */
+    ignoreHttpsErrors: bool('AMAZON_IGNORE_HTTPS_ERRORS', false),
   },
   zik: {
     username: str('ZIK_USERNAME'),
