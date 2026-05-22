@@ -77,6 +77,50 @@ npm run test:asin-resolver -- "ceramic plant pot" "rolling cart organizer"
   and `accepted=true|false`.
 - One-time setup: `npx playwright install chromium`.
 
+### eBay demand smoke test
+
+```bash
+# Default 5 known-good Amazon products
+npm run test:ebay-demand
+
+# Pull latest source-valid Amazon products from the database
+npm run test:ebay-demand -- --from-db
+
+# Single ad-hoc product
+npm run test:ebay-demand -- --asin B0C6MC5N19 --title "Spice Rack Organizer for Cabinet" --price 29.99 --keyword "spice rack organizer"
+```
+
+- Generates 4-6 eBay queries from the Amazon title / brand / category /
+  keyword (core keyword, normalized title, brand-removed title, simplified
+  noun phrase, category+keyword, same-use-case phrase).
+- Fetches comparable active listings from the live Browse API and scores
+  each one for title similarity / keyword overlap / category match /
+  price-band similarity / brand conflict / product-type match / listing
+  quality / combined comparable confidence.
+- Classifies each comparable as `EXACT_MATCH`, `SIMILAR_MATCH`,
+  `SAME_PRODUCT_DIFFERENT_BRAND`, `ADJACENT_ALTERNATIVE`,
+  `COMPLEMENTARY_PRODUCT`, `CATEGORY_GAP`, `TREND_GAP`, or
+  `LOW_CONFIDENCE`.
+- Aggregates: `active_listing_count`, `relevant_comparable_count`,
+  `exact_or_similar_match_count`, unique sellers, seller concentration,
+  median / average / band prices, listing quality gap, competition
+  density, price viability, duplicate ratio.
+- Computes `demand_score`, `sell_within_30_days_confidence`,
+  `stagnation_risk_score`, `category_velocity_score`,
+  `keyword_demand_score`, `competitor_success_score`, `saturation_score`,
+  `trend_momentum_score`, `demand_type`.
+- Hard gates: `sell_within_30_days_confidence >= 70`,
+  `stagnation_risk_score <= 40`, `demand_score >= 65`,
+  `relevant_comparable_count >= 5`. Failures persist with one of
+  `LOW_SELL_WITHIN_30_DAYS_CONFIDENCE`, `HIGH_STAGNATION_RISK`,
+  `LOW_DEMAND_SCORE`, `NOT_ENOUGH_RELEVANT_COMPARABLES`,
+  `EBAY_DEMAND_API_ERROR`, `EBAY_DEMAND_UNAVAILABLE`,
+  `IRRELEVANT_EBAY_COMPARABLES`.
+- The engine does **not** pass a product just because eBay returned
+  listings: only listings scoring >= 60 comparable confidence count as
+  "relevant", and the gates require margin viability against the Amazon
+  source price.
+
 ### Amazon source-validation smoke test
 
 ```bash

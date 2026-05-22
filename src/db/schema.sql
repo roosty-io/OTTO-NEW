@@ -164,6 +164,26 @@ create table if not exists amazon_source_checks (
 create table if not exists ebay_demand_checks (
   id uuid primary key default gen_random_uuid(),
   otto_product_id text not null,
+  asin text,
+  amazon_url text,
+  product_title text,
+  core_keyword text,
+  generated_queries text[] default '{}',
+  active_listing_count int,
+  relevant_comparable_count int,
+  exact_or_similar_match_count int,
+  seller_count int,
+  seller_concentration_score numeric,
+  median_comparable_price numeric,
+  avg_comparable_price numeric,
+  price_band_min numeric,
+  price_band_max numeric,
+  low_price numeric,
+  high_price numeric,
+  listing_quality_gap_score numeric,
+  competition_density_score numeric,
+  price_viability_score numeric,
+  duplicate_ratio numeric,
   demand_score numeric,
   sell_within_30_days_confidence numeric,
   stagnation_risk_score numeric,
@@ -173,6 +193,9 @@ create table if not exists ebay_demand_checks (
   saturation_score numeric,
   trend_momentum_score numeric,
   demand_type text,
+  demand_passed boolean,
+  rejection_reason text,
+  comparable_samples jsonb default '[]'::jsonb,
   signals jsonb default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
@@ -420,3 +443,5 @@ create index if not exists idx_asin_candidates_product on asin_candidates(otto_p
 create index if not exists idx_asin_candidates_accepted on asin_candidates(accepted);
 create index if not exists idx_amazon_source_checks_product on amazon_source_checks(otto_product_id);
 create index if not exists idx_amazon_source_checks_valid on amazon_source_checks(source_valid);
+create index if not exists idx_ebay_demand_checks_product on ebay_demand_checks(otto_product_id);
+create index if not exists idx_ebay_demand_checks_passed on ebay_demand_checks(demand_passed);

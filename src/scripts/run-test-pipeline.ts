@@ -96,9 +96,15 @@ async function main(): Promise<void> {
     // 4. Demand
     const demandResult = await demandAgent.run({
       ottoProductId: candidate.ottoProductId,
+      asin: asinResult.data.asin,
+      amazonUrl: asinResult.data.amazonUrl,
       keyword: candidate.keyword,
       productTitle: amazonData.productTitle ?? candidate.productTitleRaw,
+      amazonBrand: amazonData.brand ?? candidate.brandHint,
+      amazonCategoryBreadcrumbs: amazonData.categoryBreadcrumbs,
       amazonPrice,
+      sourceConfidenceScore: asinResult.score,
+      sourceValidityScore: amazonData.sourceValidityScore,
       runId,
     });
     const demand = demandResult.data;

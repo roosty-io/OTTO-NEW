@@ -171,20 +171,23 @@ async function main(): Promise<void> {
 
     const demandResult = await demandAgent.run({
       ottoProductId: candidate.ottoProductId,
+      asin: asinResult.data.asin,
+      amazonUrl: asinResult.data.amazonUrl,
       keyword: candidate.keyword,
       productTitle: amazonData.productTitle ?? candidate.productTitleRaw,
+      amazonBrand: amazonData.brand ?? candidate.brandHint,
+      amazonCategoryBreadcrumbs: amazonData.categoryBreadcrumbs,
       amazonPrice,
+      sourceConfidenceScore: asinResult.score,
+      sourceValidityScore: amazonData.sourceValidityScore,
       runId,
     });
     const demand = demandResult.data;
-    if (demand.sellWithin30DaysConfidence >= 70 && demand.stagnationRiskScore <= 40) {
+    if (demand.demandPassed) {
       stats.demandValid++;
     } else {
-      bump(
-        demand.sellWithin30DaysConfidence < 70
-          ? RejectionReason.DEMAND_CONFIDENCE_TOO_LOW
-          : RejectionReason.STAGNATION_TOO_HIGH,
-      );
+      bump(demand.rejectionReason ?? RejectionReason.LOW_DEMAND_SCORE);
+      continue;
     }
 
     const complianceResult = await complianceAgent.run({
