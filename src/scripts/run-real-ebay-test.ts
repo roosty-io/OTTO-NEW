@@ -196,18 +196,29 @@ async function main(): Promise<void> {
         title: amazonData.productTitle ?? candidate.productTitleRaw,
         brand: amazonData.brand ?? candidate.brandHint,
         amazonCategory: amazonData.categoryBreadcrumbs.join(' > ') || undefined,
+        amazonCategoryBreadcrumbs: amazonData.categoryBreadcrumbs,
+        bullets: amazonData.productBullets,
+        descriptionSnippet: amazonData.snapshot?.productDescriptionSnippet,
         ebayCategoryHint: candidate.categoryHint,
+        comparableTitles: demandResult.data.comparableSamples.map((c) => c.title),
+        coreKeyword: candidate.keyword,
       },
+      amazonUrl: asinResult.data.amazonUrl,
+      asin: asinResult.data.asin,
       runId,
     });
-    if (complianceResult.status === 'pass') {
+    const cdata = complianceResult.data;
+    if (cdata.compliancePassed) {
       stats.complianceValid++;
     } else {
       bump(
-        complianceResult.data.hardReject
-          ? RejectionReason.COMPLIANCE_HARD_REJECT
-          : RejectionReason.POLICY_RISK_EXCEEDED,
+        cdata.hardBlock
+          ? RejectionReason.COMPLIANCE_HARD_BLOCK
+          : cdata.manualReview
+            ? RejectionReason.MANUAL_REVIEW_REQUIRED
+            : RejectionReason.POLICY_RISK_TOO_HIGH,
       );
+      continue;
     }
 
     const costResult = await costAgent.run({

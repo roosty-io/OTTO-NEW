@@ -206,6 +206,11 @@ create table if not exists ebay_demand_checks (
 create table if not exists compliance_checks (
   id uuid primary key default gen_random_uuid(),
   otto_product_id text not null,
+  asin text,
+  amazon_url text,
+  product_title text,
+  brand text,
+  category_text text,
   policy_risk_score numeric,
   vero_risk_score numeric,
   restricted_category_risk_score numeric,
@@ -214,6 +219,15 @@ create table if not exists compliance_checks (
   fragility_score numeric,
   variation_confusion_score numeric,
   hard_reject boolean not null default false,
+  hard_block boolean not null default false,
+  manual_review boolean not null default false,
+  compliance_passed boolean not null default false,
+  matched_brands text[] default '{}',
+  matched_keywords text[] default '{}',
+  matched_categories text[] default '{}',
+  triggered_agents text[] default '{}',
+  reason_codes text[] default '{}',
+  notes text[] default '{}',
   reasons text[] default '{}',
   sub_agent_results jsonb default '[]'::jsonb,
   created_at timestamptz not null default now()
@@ -445,3 +459,6 @@ create index if not exists idx_amazon_source_checks_product on amazon_source_che
 create index if not exists idx_amazon_source_checks_valid on amazon_source_checks(source_valid);
 create index if not exists idx_ebay_demand_checks_product on ebay_demand_checks(otto_product_id);
 create index if not exists idx_ebay_demand_checks_passed on ebay_demand_checks(demand_passed);
+create index if not exists idx_compliance_checks_product on compliance_checks(otto_product_id);
+create index if not exists idx_compliance_checks_passed on compliance_checks(compliance_passed);
+create index if not exists idx_compliance_checks_block on compliance_checks(hard_block);

@@ -119,11 +119,19 @@ async function main(): Promise<void> {
         title: amazonData.productTitle ?? candidate.productTitleRaw,
         brand: amazonData.brand ?? candidate.brandHint,
         amazonCategory: amazonData.categoryBreadcrumbs.join(' > ') || undefined,
+        amazonCategoryBreadcrumbs: amazonData.categoryBreadcrumbs,
+        bullets: amazonData.productBullets,
+        descriptionSnippet: amazonData.snapshot?.productDescriptionSnippet,
         ebayCategoryHint: candidate.categoryHint,
+        comparableTitles: demandResult.data.comparableSamples.map((c) => c.title),
+        coreKeyword: candidate.keyword,
       },
+      amazonUrl: asinResult.data.amazonUrl,
+      asin: asinResult.data.asin,
       runId,
     });
-    if (complianceResult.status === 'pass') stats.complianceValid++;
+    if (!complianceResult.data.compliancePassed) continue;
+    stats.complianceValid++;
 
     // 6. Cost
     const costResult = await costAgent.run({

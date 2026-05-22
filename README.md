@@ -77,6 +77,24 @@ npm run test:asin-resolver -- "ceramic plant pot" "rolling cart organizer"
   and `accepted=true|false`.
 - One-time setup: `npx playwright install chromium`.
 
+### Compliance smoke test
+
+```bash
+npm run test:compliance
+```
+
+Runs the hardened `ComplianceRiskCouncil` against a fixed set of 5 safe
+organizers and 10 risky products (Disney bin, iPhone MagSafe charger,
+Nike shoe organizer, LEGO case, medical-grade knee brace, tactical
+self-defense flashlight, baby car seat cover, Gucci-inspired handbag,
+Pokemon party supplies, pesticide sprayer).  Prints policy risk score,
+matched brands / keywords, triggered agents, and reason codes for each.
+
+Hard-block sub-agents (`fail` + bucket=vero/restricted/ip) drive
+`hard_block=true`.  Policy risk 36-50 results in `manual_review`,
+51+ rejects.  Safe organizer titles like "2 tier under sink organizer"
+do not falsely match weapon / multipack signals.
+
 ### eBay demand smoke test
 
 ```bash
