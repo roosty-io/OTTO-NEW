@@ -77,6 +77,82 @@ npm run test:asin-resolver -- "ceramic plant pot" "rolling cart organizer"
   and `accepted=true|false`.
 - One-time setup: `npx playwright install chromium`.
 
+### Export deduplication
+
+Every CSV export is deduped at the ASIN level by `CsvExportAgent.run()`
+before either CSV is written, so the same Amazon product can never
+appear twice in the canonical export or in the manual QA review sheet.
+
+Priority for which row is kept when an ASIN appears multiple times:
+
+1. highest `final_validation_score`
+2. highest `sell_within_30_days_confidence`
+3. lowest `policy_risk_score`
+4. lowest `stagnation_risk_score`
+5. most recent `validated_at`
+
+Removed rows are logged to `deduped_products` (with the kept ASIN, both
+`otto_product_id`s, and the kept-vs-removed score diff) and emit an
+`EXPORT_DEDUPED_ASIN` event into `agent_logs`.  `export_batches`
+records `final_validated_before_dedupe`, `duplicate_asins_removed`,
+and `final_exported_after_dedupe` for at-a-glance review.
+
+### Manual QA review workflow
+
+After `npm run run:real-qa` finishes, open
+`exports/otto_manual_qa_review_<YYYY-MM-DD>.csv` and fill in the five
+reviewer columns for each row:
+
+```
+would_list_yes_no, asin_real_yes_no, demand_makes_sense_yes_no,
+low_risk_yes_no, notes
+```
+
+Then import:
+
+```bash
+npm run import:manual-qa -- \
+  --file=exports/otto_manual_qa_review_2026-05-25.csv \
+  --batch-label="second real QA batch"
+```
+
+The script:
+
+- inserts every row into `manual_qa_reviews` (blank reviewer cells stay
+  blank — no answers are ever invented)
+- prints would-list yes / no / blank counts, the **would-list approval
+  rate** over reviewed rows only, plus ASIN-real / demand-makes-sense /
+  low-risk yes rates and a list of failed-QA products
+- writes `reports/otto-manual-qa-summary-<timestamp>.md` with the same
+  numbers and a clear verdict line
+
+#### Interpreting the approval rate
+
+- **>= 70% would-list yes** over the reviewed rows: **PASS** — safe to
+  scale the next batch (e.g. raise `--limit`).
+- **< 70% would-list yes**: **HOLD** — do not scale.  Tune the failing
+  axis (most often `policyRiskScore` weights or demand thresholds) and
+  re-run a fresh `run:real-qa`.
+- **0 reviewed rows** (the script reports `NOT REVIEWED`): the CSV
+  hasn't been filled in yet.
+
+#### When to scale to the next limit
+
+After two consecutive batches at the current `--limit` cleared >= 70%
+approval, raise to the next step (e.g. 10 → 25 → 50 → 100).  Don't
+raise `--limit` and broaden `--keywords` in the same step.
+
+### Current milestone
+
+The **first real QA batch** (50 raw candidates → 13 exported) achieved
+**~76.9% would-list approval** (10 of 13) based on the operator's
+batch-level review.  Per-product reviewer answers have not yet been
+filled into the CSV, so they have not been imported into
+`manual_qa_reviews`; the batch-level result is documented in
+`reports/otto-manual-qa-summary-first-batch.md`.  Once the per-product
+CSV is filled, the same `import:manual-qa` workflow above will record
+the detailed answers.
+
 ### How to run the first real QA batch
 
 Before scaling, run a small real end-to-end batch and review the manual

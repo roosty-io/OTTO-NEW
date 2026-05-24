@@ -11,6 +11,7 @@
     "test:real-ebay": "ts-node -T -r tsconfig-paths/register src/scripts/run-real-ebay-test.ts",
     "run:real-qa": "ts-node -T -r tsconfig-paths/register src/scripts/run-real-qa.ts",
     "check:env": "ts-node -T -r tsconfig-paths/register src/scripts/check-env.ts",
+    "import:manual-qa": "ts-node -T -r tsconfig-paths/register src/scripts/import-manual-qa.ts",
     "test:asin-resolver": "ts-node -T -r tsconfig-paths/register src/scripts/test-asin-resolver.ts",
     "test:amazon-source": "ts-node -T -r tsconfig-paths/register src/scripts/test-amazon-source.ts",
     "test:ebay-demand": "ts-node -T -r tsconfig-paths/register src/scripts/test-ebay-demand.ts",
@@ -22,6 +23,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "axios": "^1.7.7",
+    "csv-parse": "^6.2.1",
     "csv-stringify": "^6.5.1",
     "dotenv": "^16.4.5",
     "playwright": "^1.47.0",

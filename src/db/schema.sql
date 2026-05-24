@@ -328,7 +328,53 @@ create table if not exists export_batches (
   discovery_run_id uuid references discovery_runs(id) on delete set null,
   file_path text not null,
   row_count int not null default 0,
+  final_validated_before_dedupe int default 0,
+  duplicate_asins_removed int default 0,
+  final_exported_after_dedupe int default 0,
   status text not null default 'completed',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists deduped_products (
+  id uuid primary key default gen_random_uuid(),
+  duplicate_group_id uuid not null,
+  asin text not null,
+  kept_otto_product_id text not null,
+  removed_otto_product_id text not null,
+  removed_reason text not null default 'duplicate_asin',
+  kept_final_validation_score numeric,
+  removed_final_validation_score numeric,
+  kept_sell_within_30_days_confidence numeric,
+  removed_sell_within_30_days_confidence numeric,
+  kept_policy_risk_score numeric,
+  removed_policy_risk_score numeric,
+  kept_stagnation_risk_score numeric,
+  removed_stagnation_risk_score numeric,
+  export_batch_id uuid,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists manual_qa_reviews (
+  id uuid primary key default gen_random_uuid(),
+  otto_product_id text,
+  asin text,
+  amazon_url text,
+  product_title text,
+  brand text,
+  amazon_price numeric,
+  delivery_days int,
+  sell_within_30_days_confidence numeric,
+  stagnation_risk_score numeric,
+  policy_risk_score numeric,
+  final_validation_score numeric,
+  would_list_yes_no text,
+  asin_real_yes_no text,
+  demand_makes_sense_yes_no text,
+  low_risk_yes_no text,
+  notes text,
+  reviewed_at timestamptz,
+  source_file text,
+  batch_label text,
   created_at timestamptz not null default now()
 );
 
@@ -462,3 +508,8 @@ create index if not exists idx_ebay_demand_checks_passed on ebay_demand_checks(d
 create index if not exists idx_compliance_checks_product on compliance_checks(otto_product_id);
 create index if not exists idx_compliance_checks_passed on compliance_checks(compliance_passed);
 create index if not exists idx_compliance_checks_block on compliance_checks(hard_block);
+create index if not exists idx_deduped_products_asin on deduped_products(asin);
+create index if not exists idx_deduped_products_batch on deduped_products(export_batch_id);
+create index if not exists idx_manual_qa_reviews_asin on manual_qa_reviews(asin);
+create index if not exists idx_manual_qa_reviews_batch on manual_qa_reviews(batch_label);
+create index if not exists idx_manual_qa_reviews_would_list on manual_qa_reviews(would_list_yes_no);

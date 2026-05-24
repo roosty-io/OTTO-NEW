@@ -37,7 +37,7 @@ import { EbayDemandScoringAgent } from '@/agents/ebay/EbayDemandScoringAgent';
 import { ComplianceRiskCouncil } from '@/agents/compliance/ComplianceRiskCouncil';
 import { CostCalculationAgent } from '@/agents/cost/CostCalculationAgent';
 import { FinalValidationAgent } from '@/agents/validation/FinalValidationAgent';
-import { CsvExportAgent } from '@/agents/export/CsvExportAgent';
+import { CsvExportAgent, dedupeByAsin } from '@/agents/export/CsvExportAgent';
 
 import type { ValidatedProduct } from '@/types/product';
 
@@ -67,6 +67,9 @@ interface PipelineStats {
   costCalculated: number;
   finalValidated: number;
   finalRejected: number;
+  finalValidatedBeforeDedupe: number;
+  duplicateAsinsRemoved: number;
+  finalExportedAfterDedupe: number;
   exportedCount: number;
   rejectionCounts: Record<string, number>;
 }
@@ -132,6 +135,9 @@ async function main(): Promise<void> {
     costCalculated: 0,
     finalValidated: 0,
     finalRejected: 0,
+    finalValidatedBeforeDedupe: 0,
+    duplicateAsinsRemoved: 0,
+    finalExportedAfterDedupe: 0,
     exportedCount: 0,
     rejectionCounts: {},
   };
@@ -318,13 +324,25 @@ async function main(): Promise<void> {
     });
   }
 
-  // 8. Main CSV export
+  // 8. ASIN-level dedupe (single source of truth for both CSVs)
+  stats.finalValidatedBeforeDedupe = validated.length;
+  const { keptProducts: dedupedProducts, removals } = dedupeByAsin(validated);
+  stats.duplicateAsinsRemoved = removals.length;
+  stats.finalExportedAfterDedupe = dedupedProducts.length;
+  if (removals.length > 0) {
+    log.info('Removed duplicate ASIN rows', {
+      duplicateAsinsRemoved: removals.length,
+      asins: removals.map((r) => r.asin),
+    });
+  }
+
+  // 9. Main CSV export (the agent re-dedupes defensively but will be a no-op).
   const exporter = new CsvExportAgent();
-  const exportResult = await exporter.run({ products: validated, discoveryRunId: runId });
+  const exportResult = await exporter.run({ products: dedupedProducts, discoveryRunId: runId });
   stats.exportedCount = exportResult.data.rowCount;
 
-  // 9. Manual QA review CSV
-  const qaPath = writeManualQaCsv(validated);
+  // 10. Manual QA review CSV - also written from the deduped set.
+  const qaPath = writeManualQaCsv(dedupedProducts);
 
   try {
     await supabase.from('discovery_runs').update({
@@ -452,6 +470,10 @@ function printSummary(args: {
   console.log(`  cost calculated      : ${stats.costCalculated}`);
   console.log(`  final validated      : ${stats.finalValidated}`);
   console.log(`  final rejected       : ${stats.finalRejected}`);
+  console.log(`  ----- export dedupe -----`);
+  console.log(`  validated before dedupe : ${stats.finalValidatedBeforeDedupe}`);
+  console.log(`  duplicate ASINs removed : ${stats.duplicateAsinsRemoved}`);
+  console.log(`  exported after dedupe   : ${stats.finalExportedAfterDedupe}`);
   console.log(`  exported count       : ${stats.exportedCount}`);
   console.log(`  end-to-end pass rate : ${passRate}%`);
   console.log(`  CSV path             : ${args.csvPath}`);
@@ -691,6 +713,9 @@ function writeReport(args: SuccessReportArgs): string {
   lines.push(`| cost calculated | ${args.stats.costCalculated} |`);
   lines.push(`| final validated | ${args.stats.finalValidated} |`);
   lines.push(`| final rejected | ${args.stats.finalRejected} |`);
+  lines.push(`| final validated before dedupe | ${args.stats.finalValidatedBeforeDedupe} |`);
+  lines.push(`| duplicate ASINs removed | ${args.stats.duplicateAsinsRemoved} |`);
+  lines.push(`| exported after dedupe | ${args.stats.finalExportedAfterDedupe} |`);
   lines.push(`| exported count | ${args.stats.exportedCount} |`);
   lines.push(`| end-to-end pass rate | ${passRate}% |`);
   lines.push('');
