@@ -20,6 +20,8 @@
 process.env.OTTO_REAL_EBAY_DISCOVERY = process.env.OTTO_REAL_EBAY_DISCOVERY ?? 'true';
 process.env.OTTO_MOCK_MODE = 'false';
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getSupabase } from '@/clients/supabaseClient';
 import { getAmazonBrowserClient } from '@/clients/amazonBrowserClient';
@@ -84,8 +86,22 @@ interface TopProductRow {
 
 async function main(): Promise<void> {
   const args = parseArgs();
-  if (!env.ebay.clientId && !env.ebay.oauthToken) {
-    log.error('Missing eBay credentials. Set EBAY_CLIENT_ID + EBAY_CLIENT_SECRET (or EBAY_OAUTH_TOKEN) in .env.');
+  const reportTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const commandRun = `npm run run:real-qa -- --limit=${args.limit} --keywords="${args.keywords.join(',')}"`;
+
+  const envProblems = validateEnvForRealQa();
+  if (envProblems.length > 0) {
+    for (const p of envProblems) log.error(p);
+    writeFailureReport({
+      timestamp: reportTimestamp,
+      commandRun,
+      failedStage: 'env_check',
+      errorMessage: envProblems.join(' | '),
+      likelyCause: 'Missing required environment variables.',
+      classification: classifyEnvProblems(envProblems),
+      recommendedFix: 'Add the missing variables to .env and re-run `npm run check:env`.',
+      nextCommand: 'npm run check:env',
+    });
     process.exit(2);
   }
 
@@ -320,14 +336,31 @@ async function main(): Promise<void> {
     log.warn('discovery_runs update failed', { err: (err as Error).message });
   }
 
-  printSummary({
+  const summaryArgs = {
     runId,
     exportBatchId: exportResult.data.exportBatchId,
     csvPath: exportResult.data.filePath,
     qaPath,
     stats,
     validated,
+  };
+  printSummary(summaryArgs);
+  const nextAction = summarizeNextAction(stats);
+  console.log(`  next action: ${nextAction}\n`);
+  const reportPath = writeReport({
+    timestamp: reportTimestamp,
+    commandRun,
+    nextAction,
+    ...summaryArgs,
   });
+  console.log(`  QA report written: ${reportPath}\n`);
+
+  // Tear down Playwright so the Node process can exit cleanly.
+  try {
+    await amazonClient.close();
+  } catch (err) {
+    log.warn('amazon browser close failed', { err: (err as Error).message });
+  }
 }
 
 function parseArgs(): { keywords: string[]; limit: number } {
@@ -464,6 +497,285 @@ function printSummary(args: {
 }
 
 main().catch((err) => {
-  logger.error('run-real-qa failed', { err: (err as Error).message, stack: (err as Error).stack });
+  const e = err as Error;
+  logger.error('run-real-qa failed', { err: e.message, stack: e.stack });
+  const reportPath = writeFailureReport({
+    timestamp: new Date().toISOString().replace(/[:.]/g, '-'),
+    commandRun: `npm run run:real-qa -- ${process.argv.slice(2).join(' ')}`,
+    failedStage: detectFailedStage(e.message, e.stack),
+    errorMessage: e.message,
+    likelyCause: likelyCauseFor(e.message, e.stack),
+    classification: classifyError(e.message),
+    recommendedFix: recommendedFixFor(e.message),
+    nextCommand: 'npm run check:env',
+  });
+  console.error(`\nFailure report written: ${reportPath}`);
   process.exit(1);
 });
+
+// ---------------------------------------------------------------------------
+// Env validation + friendly error messages
+// ---------------------------------------------------------------------------
+
+function validateEnvForRealQa(): string[] {
+  const problems: string[] = [];
+  if (!env.ebay.clientId && !env.ebay.oauthToken) {
+    problems.push('Missing eBay credentials. Add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET to .env.');
+  } else if (!env.ebay.oauthToken && env.ebay.clientId && !env.ebay.clientSecret) {
+    problems.push('Missing eBay credentials. Add EBAY_CLIENT_ID and EBAY_CLIENT_SECRET to .env.');
+  }
+  if (!env.supabase.url || !env.supabase.serviceRoleKey) {
+    problems.push('Missing Supabase configuration. Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to .env.');
+  }
+  if (env.runtime.mockMode) {
+    problems.push('OTTO_MOCK_MODE must be false for real QA.');
+  }
+  if (!env.runtime.realEbayDiscovery) {
+    // Not fatal - the script sets process.env.OTTO_REAL_EBAY_DISCOVERY = 'true'
+    // at the top so this gets flipped on at runtime. Still warn if it was
+    // misconfigured on disk so the user knows.
+  }
+  return problems;
+}
+
+function classifyEnvProblems(problems: string[]): FailureClassification {
+  if (problems.some((p) => p.includes('eBay'))) return 'ebay_credentials';
+  if (problems.some((p) => p.includes('Supabase'))) return 'supabase';
+  return 'env';
+}
+
+type FailureClassification =
+  | 'ebay_credentials'
+  | 'supabase'
+  | 'amazon_blocking'
+  | 'playwright'
+  | 'schema'
+  | 'env'
+  | 'code';
+
+function detectFailedStage(message: string, stack: string | undefined): string {
+  const m = (message ?? '').toLowerCase();
+  const s = (stack ?? '').toLowerCase();
+  if (m.includes('ebay') || s.includes('ebayclient')) return 'discovery (eBay Browse API)';
+  if (m.includes('playwright') || m.includes('chromium') || s.includes('amazonbrowserclient')) return 'amazon resolver / source validation (Playwright)';
+  if (m.includes('supabase') || m.includes('postgres') || m.includes('relation') || m.includes('column')) return 'persistence (Supabase / Postgres)';
+  return 'unknown';
+}
+
+function likelyCauseFor(message: string, _stack: string | undefined): string {
+  const m = (message ?? '').toLowerCase();
+  if (m.includes('missing credentials') || m.includes('eauth')) return 'Missing or invalid eBay credentials.';
+  if (m.includes('401') || m.includes('unauthorized')) return 'eBay or Supabase API returned 401 - credentials may be wrong or expired.';
+  if (m.includes('429') || m.includes('rate limit')) return 'eBay API rate limit hit.';
+  if (m.includes('captcha') || m.includes('robot')) return 'Amazon served a robot-check / captcha page.';
+  if (m.includes('chromium') || m.includes('executable doesn')) return 'Playwright Chromium not installed.';
+  if (m.includes('cert_authority') || m.includes('ssl') || m.includes('tls')) return 'TLS handshake failed (sandbox proxy / corporate MITM).';
+  if (m.includes('column') || m.includes('relation') || m.includes('does not exist')) return 'Supabase schema not applied or out of date.';
+  if (m.includes('econnrefused') || m.includes('econnreset') || m.includes('etimedout')) return 'Network error reaching upstream API.';
+  return 'See errorMessage above; check the failing stage logs.';
+}
+
+function classifyError(message: string): FailureClassification {
+  const m = (message ?? '').toLowerCase();
+  if (m.includes('credentials') || m.includes('401') || m.includes('unauthorized')) return 'ebay_credentials';
+  if (m.includes('captcha') || m.includes('robot') || m.includes('blocked')) return 'amazon_blocking';
+  if (m.includes('chromium') || m.includes('playwright') || m.includes('browser')) return 'playwright';
+  if (m.includes('supabase') || m.includes('postgres')) return 'supabase';
+  if (m.includes('column') || m.includes('relation') || m.includes('does not exist')) return 'schema';
+  return 'code';
+}
+
+function recommendedFixFor(message: string): string {
+  const c = classifyError(message);
+  switch (c) {
+    case 'ebay_credentials':
+      return 'Add or refresh EBAY_CLIENT_ID + EBAY_CLIENT_SECRET in .env, then re-run `npm run check:env`.';
+    case 'amazon_blocking':
+      return 'Amazon blocking - try a residential proxy via AMAZON_PROXY_SERVER, retry later, or set AMAZON_DEBUG=true for a non-headless inspection.';
+    case 'playwright':
+      return 'Install browsers with `npx playwright install chromium`, then re-run.';
+    case 'supabase':
+      return 'Verify SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in .env; ensure the project is reachable.';
+    case 'schema':
+      return 'Database schema appears missing. Run: psql "$DATABASE_URL" -f src/db/schema.sql and `npm run seed:rules`.';
+    case 'env':
+      return 'Add missing env vars to .env and re-run `npm run check:env`.';
+    case 'code':
+    default:
+      return 'Capture the error stack from the log line above and bisect the most recently changed file.';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Next-best-action diagnostics
+// ---------------------------------------------------------------------------
+
+function summarizeNextAction(stats: PipelineStats): string {
+  if (stats.rawCandidates === 0) {
+    return 'eBay returned 0 candidates. Check EBAY_CLIENT_ID/SECRET, then run `npm run test:ebay-demand` to confirm the Browse API is reachable.';
+  }
+  if (stats.asinResolved === 0) {
+    return 'No ASINs resolved. Run `npm run test:asin-resolver` to validate the Amazon resolver and check Playwright launch.';
+  }
+  if (stats.amazonSourceValid === 0) {
+    return 'No products passed Amazon source validation. Run `npm run test:amazon-source` to inspect a known ASIN and check for delivery / stock / restriction signal noise.';
+  }
+  if (stats.demandPassed === 0) {
+    return 'No products passed eBay demand. Run `npm run test:ebay-demand --from-db` to inspect comparable counts and price viability for source-valid candidates.';
+  }
+  if (stats.compliancePassed === 0) {
+    return 'Every demand-valid product was rejected by compliance. Inspect the rejection-code breakdown above and run `npm run test:compliance` to verify the council against the canonical safe samples.';
+  }
+  if (stats.finalValidated === 0) {
+    return 'Compliance passed but the final validation gate rejected everything. Inspect the rejection breakdown and check final-validation thresholds in src/config/thresholds.ts.';
+  }
+  return `${stats.finalValidated} product(s) validated. Open the manual QA CSV and target a >= 70% would_list_yes_no approval before scaling.`;
+}
+
+// ---------------------------------------------------------------------------
+// Markdown reports
+// ---------------------------------------------------------------------------
+
+function reportsDir(): string {
+  const dir = path.resolve(process.cwd(), 'reports');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+interface SuccessReportArgs {
+  timestamp: string;
+  commandRun: string;
+  nextAction: string;
+  runId: string;
+  exportBatchId: string;
+  csvPath: string;
+  qaPath: string;
+  stats: PipelineStats;
+  validated: { asin: string; amazonUrl: string; productTitle: string; brand?: string; amazonPrice: number; deliveryDays?: number; sellWithin30DaysConfidence: number; stagnationRiskScore: number; policyRiskScore: number; finalValidationScore: number }[];
+}
+
+function writeReport(args: SuccessReportArgs): string {
+  const filename = `otto-real-qa-report-${args.timestamp}.md`;
+  const file = path.join(reportsDir(), filename);
+  const passRate = args.stats.rawCandidates > 0
+    ? ((args.stats.finalValidated / args.stats.rawCandidates) * 100).toFixed(1)
+    : '0';
+  const codes = Object.entries(args.stats.rejectionCounts).sort((a, b) => b[1] - a[1]);
+  const top = args.validated
+    .slice()
+    .sort((a, b) => b.finalValidationScore - a.finalValidationScore)
+    .slice(0, 10);
+
+  const lines: string[] = [];
+  lines.push(`# OTTO Real QA Batch Report`);
+  lines.push('');
+  lines.push(`- **Generated**: ${new Date().toISOString()}`);
+  lines.push(`- **Status**: completed`);
+  lines.push(`- **Command**: \`${args.commandRun}\``);
+  lines.push(`- **discovery_run_id**: \`${args.runId}\``);
+  lines.push(`- **export_batch_id**: \`${args.exportBatchId}\``);
+  lines.push('');
+  lines.push(`## Stage counts`);
+  lines.push('');
+  lines.push(`| Stage | Count |`);
+  lines.push(`| --- | --- |`);
+  lines.push(`| raw candidates | ${args.stats.rawCandidates} |`);
+  lines.push(`| ASIN resolved | ${args.stats.asinResolved} |`);
+  lines.push(`| ASIN failed | ${args.stats.asinFailed} |`);
+  lines.push(`| Amazon source valid | ${args.stats.amazonSourceValid} |`);
+  lines.push(`| Amazon source failed | ${args.stats.amazonSourceFailed} |`);
+  lines.push(`| demand passed | ${args.stats.demandPassed} |`);
+  lines.push(`| demand failed | ${args.stats.demandFailed} |`);
+  lines.push(`| compliance passed | ${args.stats.compliancePassed} |`);
+  lines.push(`| compliance failed | ${args.stats.complianceFailed} |`);
+  lines.push(`| cost calculated | ${args.stats.costCalculated} |`);
+  lines.push(`| final validated | ${args.stats.finalValidated} |`);
+  lines.push(`| final rejected | ${args.stats.finalRejected} |`);
+  lines.push(`| exported count | ${args.stats.exportedCount} |`);
+  lines.push(`| end-to-end pass rate | ${passRate}% |`);
+  lines.push('');
+  lines.push(`- **CSV export path**: \`${args.csvPath}\``);
+  lines.push(`- **manual QA CSV path**: \`${args.qaPath}\``);
+  lines.push('');
+  lines.push(`## Rejection breakdown`);
+  lines.push('');
+  if (codes.length === 0) {
+    lines.push('_(none)_');
+  } else {
+    lines.push(`| Code | Count |`);
+    lines.push(`| --- | --- |`);
+    for (const [code, n] of codes) lines.push(`| \`${code}\` | ${n} |`);
+  }
+  lines.push('');
+  lines.push(`## Top passing products`);
+  lines.push('');
+  if (top.length === 0) {
+    lines.push('_(no products passed all gates this run)_');
+  } else {
+    for (const p of top) {
+      lines.push(`### [${p.asin}] ${p.productTitle}`);
+      lines.push(`- URL: ${p.amazonUrl}`);
+      lines.push(`- brand: ${p.brand ?? '(none)'}`);
+      lines.push(`- amazon price: $${p.amazonPrice.toFixed(2)}`);
+      lines.push(`- delivery days: ${p.deliveryDays ?? 'unknown'}`);
+      lines.push(`- sell within 30 days confidence: ${p.sellWithin30DaysConfidence.toFixed(0)}`);
+      lines.push(`- stagnation risk: ${p.stagnationRiskScore.toFixed(0)}`);
+      lines.push(`- policy risk: ${p.policyRiskScore.toFixed(0)}`);
+      lines.push(`- final validation score: ${p.finalValidationScore.toFixed(0)}`);
+      lines.push('');
+    }
+  }
+  lines.push(`## Next action`);
+  lines.push('');
+  lines.push(args.nextAction);
+  lines.push('');
+  fs.writeFileSync(file, lines.join('\n'), 'utf8');
+  return file;
+}
+
+interface FailureReportArgs {
+  timestamp: string;
+  commandRun: string;
+  failedStage: string;
+  errorMessage: string;
+  likelyCause: string;
+  classification: FailureClassification;
+  recommendedFix: string;
+  nextCommand: string;
+}
+
+function writeFailureReport(args: FailureReportArgs): string {
+  const filename = `otto-real-qa-failure-${args.timestamp}.md`;
+  const file = path.join(reportsDir(), filename);
+  const lines: string[] = [];
+  lines.push(`# OTTO Real QA Batch — FAILURE`);
+  lines.push('');
+  lines.push(`- **Generated**: ${new Date().toISOString()}`);
+  lines.push(`- **Status**: failed`);
+  lines.push(`- **Command**: \`${args.commandRun}\``);
+  lines.push(`- **Failed stage**: ${args.failedStage}`);
+  lines.push(`- **Classification**: ${args.classification}`);
+  lines.push('');
+  lines.push(`## Error message`);
+  lines.push('');
+  lines.push('```');
+  lines.push(args.errorMessage);
+  lines.push('```');
+  lines.push('');
+  lines.push(`## Likely cause`);
+  lines.push('');
+  lines.push(args.likelyCause);
+  lines.push('');
+  lines.push(`## Recommended fix`);
+  lines.push('');
+  lines.push(args.recommendedFix);
+  lines.push('');
+  lines.push(`## Next command`);
+  lines.push('');
+  lines.push('```');
+  lines.push(args.nextCommand);
+  lines.push('```');
+  lines.push('');
+  fs.writeFileSync(file, lines.join('\n'), 'utf8');
+  return file;
+}

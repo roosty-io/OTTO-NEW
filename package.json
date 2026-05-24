@@ -10,6 +10,7 @@
     "test:pipeline": "ts-node -T -r tsconfig-paths/register src/scripts/run-test-pipeline.ts",
     "test:real-ebay": "ts-node -T -r tsconfig-paths/register src/scripts/run-real-ebay-test.ts",
     "run:real-qa": "ts-node -T -r tsconfig-paths/register src/scripts/run-real-qa.ts",
+    "check:env": "ts-node -T -r tsconfig-paths/register src/scripts/check-env.ts",
     "test:asin-resolver": "ts-node -T -r tsconfig-paths/register src/scripts/test-asin-resolver.ts",
     "test:amazon-source": "ts-node -T -r tsconfig-paths/register src/scripts/test-amazon-source.ts",
     "test:ebay-demand": "ts-node -T -r tsconfig-paths/register src/scripts/test-ebay-demand.ts",
