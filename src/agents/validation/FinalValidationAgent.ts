@@ -3,6 +3,7 @@ import { logger } from '@/utils/logger';
 import { THRESHOLDS } from '@/config/thresholds';
 import { clamp, weightedAverage } from '@/utils/scoring';
 import { makeResult, persistAgentResult, recordRejection } from '@/agents/baseAgent';
+import { RejectionReason } from '@/utils/rejectionReasons';
 import type { AgentResult } from '@/types/agent';
 import type { ComplianceScoreBundle, DemandScoreBundle } from '@/types/validation';
 import type { AmazonValidationData } from '@/agents/amazon/AmazonSourceValidationAgent';
@@ -33,46 +34,57 @@ export class FinalValidationAgent {
     let passed = true;
     let rejectionReason: string | undefined;
 
-    const fail = (reason: string) => {
+    // `reason` is the stable rejection code stored in rejection_reason;
+    // `detail` is a free-form sentence kept in the agent reason list.
+    const fail = (code: string, detail: string) => {
       if (passed) {
         passed = false;
-        rejectionReason = reason;
+        rejectionReason = code;
       }
-      reasons.push(reason);
+      reasons.push(code, detail);
     };
 
-    if (!input.asin) fail('Missing confirmed ASIN');
-    if (!input.amazonUrl) fail('Missing Amazon URL');
+    if (!input.asin) fail(RejectionReason.ASIN_NOT_RESOLVED, 'Missing confirmed ASIN');
+    if (!input.amazonUrl) fail(RejectionReason.ASIN_NOT_RESOLVED, 'Missing Amazon URL');
 
     const a = input.amazon;
-    if (!a || !a.inStock) fail('Amazon source not in stock');
+    if (!a || !a.inStock) fail(RejectionReason.AMAZON_OUT_OF_STOCK, 'Amazon source not in stock');
     if (a && a.deliveryDays !== undefined && a.deliveryDays > THRESHOLDS.DEFAULT_MAX_DELIVERY_DAYS) {
-      fail(`Delivery ${a.deliveryDays}d exceeds ${THRESHOLDS.DEFAULT_MAX_DELIVERY_DAYS}d`);
+      fail(RejectionReason.DELIVERY_TOO_LONG, `Delivery ${a.deliveryDays}d exceeds ${THRESHOLDS.DEFAULT_MAX_DELIVERY_DAYS}d`);
     }
-    if (a?.isBundleOrMultipack) fail('Bundle or multipack');
-    if (a?.isRenewedOrRefurbished) fail('Renewed or refurbished');
-    if (a?.isAmazonBasics) fail('Amazon Basics');
+    if (a?.isBundleOrMultipack) fail(RejectionReason.BUNDLE_OR_MULTIPACK_EXCLUDED, 'Bundle or multipack');
+    if (a?.isRenewedOrRefurbished) fail(RejectionReason.USED_RENEWED_REFURBISHED, 'Renewed or refurbished');
+    if (a?.isAmazonBasics) fail(RejectionReason.AMAZON_BASICS_EXCLUDED, 'Amazon Basics');
 
     const c = input.compliance;
-    if (!c) fail('Missing compliance result');
-    if (c?.hardReject) fail('Compliance hard reject');
-    if (c && c.restrictedCategoryRiskScore >= 100) fail('Restricted category hard block');
+    if (!c) fail(RejectionReason.UNSPECIFIED, 'Missing compliance result');
+    if (c?.hardReject) fail(RejectionReason.COMPLIANCE_HARD_BLOCK, 'Compliance hard reject');
+    if (c && c.restrictedCategoryRiskScore >= 100) fail(RejectionReason.RESTRICTED_CATEGORY, 'Restricted category hard block');
     if (c && c.policyRiskScore > THRESHOLDS.MAX_POLICY_RISK_SCORE) {
-      fail(`policy_risk_score ${c.policyRiskScore} > ${THRESHOLDS.MAX_POLICY_RISK_SCORE}`);
+      fail(RejectionReason.POLICY_RISK_TOO_HIGH, `policy_risk_score ${c.policyRiskScore} > ${THRESHOLDS.MAX_POLICY_RISK_SCORE}`);
     }
 
     const d = input.demand;
-    if (!d) fail('Missing demand result');
+    if (!d) fail(RejectionReason.EBAY_DEMAND_UNAVAILABLE, 'Missing demand result');
     if (d && d.sellWithin30DaysConfidence < THRESHOLDS.MIN_SELL_WITHIN_30_DAYS_CONFIDENCE) {
-      fail(`sell_within_30_days_confidence ${d.sellWithin30DaysConfidence} < ${THRESHOLDS.MIN_SELL_WITHIN_30_DAYS_CONFIDENCE}`);
+      fail(
+        RejectionReason.LOW_SELL_WITHIN_30_DAYS_CONFIDENCE,
+        `sell_within_30_days_confidence ${d.sellWithin30DaysConfidence} < ${THRESHOLDS.MIN_SELL_WITHIN_30_DAYS_CONFIDENCE}`,
+      );
     }
     if (d && d.stagnationRiskScore > THRESHOLDS.MAX_STAGNATION_RISK_SCORE) {
-      fail(`stagnation_risk_score ${d.stagnationRiskScore} > ${THRESHOLDS.MAX_STAGNATION_RISK_SCORE}`);
+      fail(
+        RejectionReason.HIGH_STAGNATION_RISK,
+        `stagnation_risk_score ${d.stagnationRiskScore} > ${THRESHOLDS.MAX_STAGNATION_RISK_SCORE}`,
+      );
     }
 
     const finalValidationScore = computeFinalScore(input);
     if (finalValidationScore < THRESHOLDS.MIN_FINAL_VALIDATION_SCORE) {
-      fail(`final_validation_score ${finalValidationScore.toFixed(0)} < ${THRESHOLDS.MIN_FINAL_VALIDATION_SCORE}`);
+      fail(
+        RejectionReason.FINAL_SCORE_TOO_LOW,
+        `final_validation_score ${finalValidationScore.toFixed(0)} < ${THRESHOLDS.MIN_FINAL_VALIDATION_SCORE}`,
+      );
     }
 
     const finalPassed = passed;

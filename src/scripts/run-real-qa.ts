@@ -360,7 +360,9 @@ async function main(): Promise<void> {
     csvPath: exportResult.data.filePath,
     qaPath,
     stats,
-    validated,
+    // Use the deduped set so the "top passing products" panel and the
+    // Markdown report match the rows actually written to the CSV.
+    validated: dedupedProducts,
   };
   printSummary(summaryArgs);
   const nextAction = summarizeNextAction(stats);
