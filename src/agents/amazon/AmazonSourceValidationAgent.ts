@@ -16,6 +16,7 @@ import {
   type RestrictedSignalCategory,
 } from '@/utils/productRiskText';
 import { scoreAmazonSource } from '@/utils/amazonSourceScoring';
+import { evaluateShippingGate, type DeliveryContext, type ShippingGateResult, type ShippingConfidence } from '@/utils/amazonShippingGate';
 import { makeResult, persistAgentResult, recordRejection } from '@/agents/baseAgent';
 import { RejectionReason } from '@/utils/rejectionReasons';
 import type { AgentResult } from '@/types/agent';
@@ -39,11 +40,27 @@ export interface AmazonValidationData {
   buyable: boolean;
   hasSourcePrice: boolean;
   deliveryText?: string;
+  rawDeliveryText?: string;
+  fastestDeliveryText?: string;
+  deliveryContext: DeliveryContext;
+  addressZipUsed?: string;
+  deliveryParseMethod?: string;
   estimatedDeliveryDays?: number;
   deliveryParseConfidence?: 'high' | 'medium' | 'low' | 'none';
   deliveryWindowStart?: string;
   deliveryWindowEnd?: string;
   withinDeliveryWindow: boolean;
+  // Prime / FBA / Amazon-fulfillment signals
+  primeSignalDetected: boolean;
+  primeSignalSource?: string;
+  fbaSignalDetected: boolean;
+  shipsFromAmazon: boolean;
+  soldByAmazon: boolean;
+  fulfilledByAmazon: boolean;
+  // Shipping gate outcome
+  shippingGateResult: ShippingGateResult;
+  shippingConfidence: ShippingConfidence;
+  shippingReviewRequired: boolean;
   sellerText?: string;
   shipsFromText?: string;
   soldByText?: string;
@@ -179,14 +196,33 @@ export class AmazonSourceValidationAgent {
       fail(code, `Restricted signal: ${restricted.hits.slice(0, 3).map((h) => h.phrase).join(', ')}`);
     }
 
-    // Delivery rules: explicit out-of-stock text, fail. Parsed days > max, fail.
-    // Low/none confidence + already-known stock issues: caller has more info.
-    if (delivery.signals.includes('out_of_stock_text')) {
-      // Already handled by stock checks; nothing extra to add.
-    } else if (delivery.deliveryPassesMaxWindow === false) {
-      fail(RejectionReason.DELIVERY_TOO_LONG, `Delivery exceeds ${THRESHOLDS.DEFAULT_MAX_DELIVERY_DAYS} days: ${delivery.rawText}`);
-    } else if (delivery.deliveryParseConfidence === 'low' || delivery.deliveryParseConfidence === 'none') {
-      fail(RejectionReason.DELIVERY_UNCLEAR, `Delivery text could not be parsed confidently: ${delivery.rawText || '(empty)'}`);
+    // V1 shipping gate: trust Prime/FBA/Amazon-fulfillment signals even
+    // when the guest delivery estimate is slow or unparseable.  Out-of-stock
+    // is already captured above as AMAZON_OUT_OF_STOCK.
+    const gate = evaluateShippingGate({
+      delivery,
+      primeSignals: {
+        primeBadgeVisible: page.primeBadgeVisible,
+        primeInDeliveryText: page.primeInDeliveryText,
+        fastestDeliveryText: page.fastestDeliveryText,
+        shipsFromAmazon: page.shipsFromAmazon,
+        soldByAmazon: page.soldByAmazon,
+        fulfilledByAmazon: page.fulfilledByAmazon,
+      },
+      maxDeliveryDays: THRESHOLDS.DEFAULT_MAX_DELIVERY_DAYS,
+      outOfStock: !inStock,
+    });
+    if (gate.shippingGateResult === 'reject' && gate.rejectionCode &&
+        gate.rejectionCode !== RejectionReason.AMAZON_OUT_OF_STOCK) {
+      fail(gate.rejectionCode, gate.notes);
+    }
+    if (gate.shippingGateResult === 'prime_likely_pass') {
+      reasons.push(RejectionReason.PRIME_LIKELY_DELIVERY_PASS, gate.notes);
+      if (gate.shippingReviewRequired) {
+        reasons.push(RejectionReason.SHIPPING_REVIEW_REQUIRED);
+      }
+      if (gate.primeSignalDetected) reasons.push(RejectionReason.PRIME_SIGNAL_DETECTED);
+      if (gate.fbaSignalDetected) reasons.push(RejectionReason.FBA_SIGNAL_DETECTED);
     }
 
     const scoring = scoreAmazonSource({
@@ -204,11 +240,12 @@ export class AmazonSourceValidationAgent {
       hasHardRestriction: restrictedCategories.length > 0,
       delivery,
       maxDeliveryDays: THRESHOLDS.DEFAULT_MAX_DELIVERY_DAYS,
+      shippingGateResult: gate.shippingGateResult,
     });
 
     const passed = !rejectionReason && scoring.passed;
     const withinDeliveryWindow =
-      delivery.deliveryPassesMaxWindow === undefined ? false : delivery.deliveryPassesMaxWindow;
+      gate.shippingGateResult === 'pass' || gate.shippingGateResult === 'prime_likely_pass';
 
     return {
       asin,
@@ -222,11 +259,25 @@ export class AmazonSourceValidationAgent {
       buyable,
       hasSourcePrice: priceKnown,
       deliveryText: page.deliveryText,
+      rawDeliveryText: page.rawDeliveryText ?? page.deliveryText,
+      fastestDeliveryText: page.fastestDeliveryText,
+      deliveryContext: 'public_guest_zip',
+      addressZipUsed: env.pipeline.defaultZipCode,
+      deliveryParseMethod: delivery.signals.join(',') || 'unparsed',
       estimatedDeliveryDays: delivery.estimatedDeliveryDays ?? page.estimatedDeliveryDays,
       deliveryParseConfidence: delivery.deliveryParseConfidence,
       deliveryWindowStart: delivery.deliveryWindowStart,
       deliveryWindowEnd: delivery.deliveryWindowEnd,
       withinDeliveryWindow,
+      primeSignalDetected: gate.primeSignalDetected,
+      primeSignalSource: gate.primeSignalSource,
+      fbaSignalDetected: gate.fbaSignalDetected,
+      shipsFromAmazon: page.shipsFromAmazon,
+      soldByAmazon: page.soldByAmazon,
+      fulfilledByAmazon: page.fulfilledByAmazon,
+      shippingGateResult: gate.shippingGateResult,
+      shippingConfidence: gate.shippingConfidence,
+      shippingReviewRequired: gate.shippingReviewRequired,
       sellerText: page.sellerText,
       shipsFromText: page.shipsFromText,
       soldByText: page.soldByText,
@@ -270,6 +321,16 @@ export class AmazonSourceValidationAgent {
       buyable: false,
       hasSourcePrice: false,
       withinDeliveryWindow: false,
+      deliveryContext: 'public_guest_zip',
+      addressZipUsed: env.pipeline.defaultZipCode,
+      primeSignalDetected: false,
+      fbaSignalDetected: false,
+      shipsFromAmazon: false,
+      soldByAmazon: false,
+      fulfilledByAmazon: false,
+      shippingGateResult: 'reject',
+      shippingConfidence: 'low',
+      shippingReviewRequired: false,
       isAmazonBasics: false,
       isRenewedOrRefurbished: false,
       isBundleOrMultipack: false,
@@ -322,6 +383,20 @@ export class AmazonSourceValidationAgent {
         delivery_window_start: data.deliveryWindowStart ?? null,
         delivery_window_end: data.deliveryWindowEnd ?? null,
         within_delivery_window: data.withinDeliveryWindow,
+        raw_delivery_text: data.rawDeliveryText ?? null,
+        fastest_delivery_text: data.fastestDeliveryText ?? null,
+        delivery_context: data.deliveryContext,
+        address_zip_used: data.addressZipUsed ?? null,
+        delivery_parse_method: data.deliveryParseMethod ?? null,
+        prime_signal_detected: data.primeSignalDetected,
+        prime_signal_source: data.primeSignalSource ?? null,
+        fba_signal_detected: data.fbaSignalDetected,
+        ships_from_amazon: data.shipsFromAmazon,
+        sold_by_amazon: data.soldByAmazon,
+        fulfilled_by_amazon: data.fulfilledByAmazon,
+        shipping_confidence: data.shippingConfidence,
+        shipping_review_required: data.shippingReviewRequired,
+        shipping_gate_result: data.shippingGateResult,
         seller_text: data.sellerText ?? null,
         ships_from_text: data.shipsFromText ?? null,
         sold_by_text: data.soldByText ?? null,

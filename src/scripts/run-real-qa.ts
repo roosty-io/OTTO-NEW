@@ -72,6 +72,12 @@ interface PipelineStats {
   finalExportedAfterDedupe: number;
   exportedCount: number;
   rejectionCounts: Record<string, number>;
+  // Shipping gate breakdown (over Amazon-source-checked products)
+  shippingPass: number;
+  shippingPrimeLikelyPass: number;
+  shippingReviewRequired: number;
+  shippingRejectTooLong: number;
+  shippingRejectUnclear: number;
 }
 
 interface TopProductRow {
@@ -140,6 +146,11 @@ async function main(): Promise<void> {
     finalExportedAfterDedupe: 0,
     exportedCount: 0,
     rejectionCounts: {},
+    shippingPass: 0,
+    shippingPrimeLikelyPass: 0,
+    shippingReviewRequired: 0,
+    shippingRejectTooLong: 0,
+    shippingRejectUnclear: 0,
   };
 
   const bump = (code: string | undefined) => {
@@ -192,6 +203,9 @@ async function main(): Promise<void> {
       amazonUrl: asinResult.data.amazonUrl,
       runId,
     });
+    const rej = amazonResult.data.rejectionReason;
+    if (rej === RejectionReason.DELIVERY_TOO_LONG) stats.shippingRejectTooLong++;
+    if (rej === RejectionReason.DELIVERY_UNCLEAR) stats.shippingRejectUnclear++;
     if (amazonResult.status !== 'pass') {
       stats.amazonSourceFailed++;
       bump(amazonResult.data.rejectionReason ?? amazonResult.data.reasons[0]);
@@ -199,6 +213,9 @@ async function main(): Promise<void> {
     }
     stats.amazonSourceValid++;
     const amazonData = amazonResult.data;
+    if (amazonData.shippingGateResult === 'pass') stats.shippingPass++;
+    if (amazonData.shippingGateResult === 'prime_likely_pass') stats.shippingPrimeLikelyPass++;
+    if (amazonData.shippingReviewRequired) stats.shippingReviewRequired++;
     const amazonPrice = amazonData.price ?? asinResult.data.price ?? candidate.priceHint ?? 0;
 
     // 4. Demand
@@ -291,6 +308,16 @@ async function main(): Promise<void> {
       stockStatus: amazonData.stockStatus,
       rating: amazonData.rating,
       reviewCount: amazonData.reviewCount,
+      rawDeliveryText: amazonData.rawDeliveryText,
+      deliveryContext: amazonData.deliveryContext,
+      primeSignalDetected: amazonData.primeSignalDetected,
+      primeSignalSource: amazonData.primeSignalSource,
+      fbaSignalDetected: amazonData.fbaSignalDetected,
+      shipsFromAmazon: amazonData.shipsFromAmazon,
+      soldByAmazon: amazonData.soldByAmazon,
+      fulfilledByAmazon: amazonData.fulfilledByAmazon,
+      shippingGateResult: amazonData.shippingGateResult,
+      shippingReviewRequired: amazonData.shippingReviewRequired,
       sourceConfidenceScore: asinResult.score,
       productMatchType: asinResult.score >= 80 ? 'exact' : 'similar',
       opportunityType: 'direct_match',
@@ -409,6 +436,16 @@ function writeManualQaCsv(products: ValidatedProduct[]): string {
     'brand',
     'amazon_price',
     'delivery_days',
+    'raw_delivery_text',
+    'delivery_context',
+    'prime_signal_detected',
+    'prime_signal_source',
+    'fba_signal_detected',
+    'ships_from_amazon',
+    'sold_by_amazon',
+    'fulfilled_by_amazon',
+    'shipping_gate_result',
+    'shipping_review_required',
     'sell_within_30_days_confidence',
     'stagnation_risk_score',
     'policy_risk_score',
@@ -427,6 +464,16 @@ function writeManualQaCsv(products: ValidatedProduct[]): string {
     brand: p.brand,
     amazon_price: p.amazonPrice,
     delivery_days: p.deliveryDays,
+    raw_delivery_text: p.rawDeliveryText,
+    delivery_context: p.deliveryContext,
+    prime_signal_detected: p.primeSignalDetected,
+    prime_signal_source: p.primeSignalSource,
+    fba_signal_detected: p.fbaSignalDetected,
+    ships_from_amazon: p.shipsFromAmazon,
+    sold_by_amazon: p.soldByAmazon,
+    fulfilled_by_amazon: p.fulfilledByAmazon,
+    shipping_gate_result: p.shippingGateResult,
+    shipping_review_required: p.shippingReviewRequired,
     sell_within_30_days_confidence: p.sellWithin30DaysConfidence,
     stagnation_risk_score: p.stagnationRiskScore,
     policy_risk_score: p.policyRiskScore,
@@ -477,6 +524,12 @@ function printSummary(args: {
   console.log(`  duplicate ASINs removed : ${stats.duplicateAsinsRemoved}`);
   console.log(`  exported after dedupe   : ${stats.finalExportedAfterDedupe}`);
   console.log(`  exported count       : ${stats.exportedCount}`);
+  console.log(`  ----- shipping gate -----`);
+  console.log(`  shipping pass        : ${stats.shippingPass}`);
+  console.log(`  prime-likely pass    : ${stats.shippingPrimeLikelyPass}`);
+  console.log(`  shipping review req  : ${stats.shippingReviewRequired}`);
+  console.log(`  rejected too long    : ${stats.shippingRejectTooLong}`);
+  console.log(`  rejected unclear     : ${stats.shippingRejectUnclear}`);
   console.log(`  end-to-end pass rate : ${passRate}%`);
   console.log(`  CSV path             : ${args.csvPath}`);
   console.log(`  manual QA CSV path   : ${args.qaPath}`);
@@ -720,6 +773,16 @@ function writeReport(args: SuccessReportArgs): string {
   lines.push(`| exported after dedupe | ${args.stats.finalExportedAfterDedupe} |`);
   lines.push(`| exported count | ${args.stats.exportedCount} |`);
   lines.push(`| end-to-end pass rate | ${passRate}% |`);
+  lines.push('');
+  lines.push(`## Shipping gate`);
+  lines.push('');
+  lines.push(`| Outcome | Count |`);
+  lines.push(`| --- | --- |`);
+  lines.push(`| shipping pass (clear & within window) | ${args.stats.shippingPass} |`);
+  lines.push(`| prime-likely pass (Prime/FBA signal trusted) | ${args.stats.shippingPrimeLikelyPass} |`);
+  lines.push(`| requires manual shipping review | ${args.stats.shippingReviewRequired} |`);
+  lines.push(`| rejected: DELIVERY_TOO_LONG | ${args.stats.shippingRejectTooLong} |`);
+  lines.push(`| rejected: DELIVERY_UNCLEAR | ${args.stats.shippingRejectUnclear} |`);
   lines.push('');
   lines.push(`- **CSV export path**: \`${args.csvPath}\``);
   lines.push(`- **manual QA CSV path**: \`${args.qaPath}\``);

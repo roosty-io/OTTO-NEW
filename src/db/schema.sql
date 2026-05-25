@@ -139,6 +139,20 @@ create table if not exists amazon_source_checks (
   delivery_window_start date,
   delivery_window_end date,
   within_delivery_window boolean,
+  raw_delivery_text text,
+  fastest_delivery_text text,
+  delivery_context text,
+  address_zip_used text,
+  delivery_parse_method text,
+  prime_signal_detected boolean,
+  prime_signal_source text,
+  fba_signal_detected boolean,
+  ships_from_amazon boolean,
+  sold_by_amazon boolean,
+  fulfilled_by_amazon boolean,
+  shipping_confidence text,
+  shipping_review_required boolean,
+  shipping_gate_result text,
   seller_text text,
   ships_from_text text,
   sold_by_text text,
@@ -503,6 +517,8 @@ create index if not exists idx_asin_candidates_product on asin_candidates(otto_p
 create index if not exists idx_asin_candidates_accepted on asin_candidates(accepted);
 create index if not exists idx_amazon_source_checks_product on amazon_source_checks(otto_product_id);
 create index if not exists idx_amazon_source_checks_valid on amazon_source_checks(source_valid);
+create index if not exists idx_amazon_source_checks_shipping on amazon_source_checks(shipping_gate_result);
+create index if not exists idx_amazon_source_checks_prime on amazon_source_checks(prime_signal_detected);
 create index if not exists idx_ebay_demand_checks_product on ebay_demand_checks(otto_product_id);
 create index if not exists idx_ebay_demand_checks_passed on ebay_demand_checks(demand_passed);
 create index if not exists idx_compliance_checks_product on compliance_checks(otto_product_id);

@@ -310,6 +310,31 @@ npm run test:ebay-demand -- --asin B0C6MC5N19 --title "Spice Rack Organizer for 
   "relevant", and the gates require margin viability against the Amazon
   source price.
 
+### Shipping gate (Prime / FBA / Amazon-fulfillment)
+
+OTTO runs in a public guest Playwright context (no Amazon login, no
+stored Amazon credentials).  The legacy gate hard-rejected products
+whose guest delivery was slow or unparseable, but those same products
+often ship same-day or next-day for Prime members - we don't want
+false rejects.
+
+The V1 shipping gate combines parsed delivery with **visible**
+Prime / FBA / Amazon-fulfillment signals (Prime badge, "FREE Prime
+delivery" / "FREE delivery Tomorrow" / "Or fastest delivery ...",
+`Ships from Amazon`, `Sold by Amazon`, `Fulfilled by Amazon`) and
+classifies each product as one of:
+
+| Outcome | When |
+| --- | --- |
+| `pass` | parsed delivery <= 10 days; **always** advances |
+| `prime_likely_pass` | parsed delivery > 10 days OR unparseable, AND a Prime/FBA signal is visible.  Advances but `shipping_review_required = true`. |
+| `reject` | parsed delivery > 10 days with no Prime/FBA signal (`DELIVERY_TOO_LONG`), OR unparseable with no Prime/FBA signal (`DELIVERY_UNCLEAR`) |
+
+`prime_likely_pass` rows surface to the CSV / manual QA sheet with
+`shipping_review_required=true` so a human can verify shipping in
+their own logged-in Prime account.  Run `npm run test:shipping-gate`
+to exercise the cases.
+
 ### Amazon source-validation smoke test
 
 ```bash

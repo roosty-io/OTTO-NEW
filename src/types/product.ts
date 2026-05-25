@@ -73,6 +73,18 @@ export interface ValidatedProduct {
   fragilityScore: number;
   variationConfusionScore: number;
 
+  // Shipping gate / Prime signals
+  rawDeliveryText?: string;
+  deliveryContext?: string;
+  primeSignalDetected?: boolean;
+  primeSignalSource?: string;
+  fbaSignalDetected?: boolean;
+  shipsFromAmazon?: boolean;
+  soldByAmazon?: boolean;
+  fulfilledByAmazon?: boolean;
+  shippingGateResult?: 'pass' | 'prime_likely_pass' | 'reject';
+  shippingReviewRequired?: boolean;
+
   // Cost
   totalCostEstimate: number;
   predictedMonthlyProfitPer100Listings: number;

@@ -87,6 +87,8 @@ export interface AmazonProductPageData {
   inStock?: boolean;
   buyable?: boolean;
   deliveryText?: string;
+  rawDeliveryText?: string;
+  fastestDeliveryText?: string;
   estimatedDeliveryDays?: number;
   deliveryParseConfidence?: 'high' | 'medium' | 'low' | 'none';
   sellerText?: string;
@@ -102,6 +104,15 @@ export interface AmazonProductPageData {
   categoryBreadcrumbs: string[];
   warningBadges: string[];
   restrictedSignals: string[];
+  // Prime / FBA / Amazon-fulfillment signals (extracted from the public PDP).
+  primeBadgeVisible: boolean;
+  primeInDeliveryText: boolean;
+  primeSignalDetected: boolean;
+  primeSignalSource?: string;
+  fbaSignalDetected: boolean;
+  shipsFromAmazon: boolean;
+  soldByAmazon: boolean;
+  fulfilledByAmazon: boolean;
   validationErrorCode?: ValidationErrorCode;
 }
 
@@ -202,6 +213,16 @@ class MockAmazonBrowserClient implements AmazonBrowserClient {
       categoryBreadcrumbs: ['Home & Kitchen', 'Storage & Organization'],
       warningBadges: [],
       restrictedSignals: [],
+      rawDeliveryText: `FREE delivery in ${deliveryDays} days`,
+      fastestDeliveryText: undefined,
+      primeBadgeVisible: true,
+      primeInDeliveryText: true,
+      primeSignalDetected: true,
+      primeSignalSource: 'prime_badge,delivery_text_prime',
+      fbaSignalDetected: true,
+      shipsFromAmazon: true,
+      soldByAmazon: true,
+      fulfilledByAmazon: true,
     };
   }
   async close(): Promise<void> {
@@ -496,6 +517,13 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
       categoryBreadcrumbs: [],
       warningBadges: [],
       restrictedSignals: [],
+      primeBadgeVisible: false,
+      primeInDeliveryText: false,
+      primeSignalDetected: false,
+      fbaSignalDetected: false,
+      shipsFromAmazon: false,
+      soldByAmazon: false,
+      fulfilledByAmazon: false,
     };
 
     const browser = await this.ensureBrowser();
@@ -547,6 +575,8 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
         inStock: inferInStock(parsed.availabilityText, parsed.buyable),
         buyable: parsed.buyable,
         deliveryText: parsed.deliveryText ?? undefined,
+        rawDeliveryText: parsed.deliveryText ?? undefined,
+        fastestDeliveryText: parsed.fastestDeliveryText ?? undefined,
         sellerText: parsed.sellerText ?? undefined,
         shipsFromText: parsed.shipsFromText ?? undefined,
         soldByText: parsed.soldByText ?? undefined,
@@ -560,6 +590,7 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
         categoryBreadcrumbs: parsed.categoryBreadcrumbs,
         warningBadges: parsed.warningBadges,
         restrictedSignals: [],
+        ...computePrimeFlags(parsed),
       };
     } catch (err) {
       return {
@@ -580,6 +611,8 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
     availabilityText: string | null;
     buyable: boolean;
     deliveryText: string | null;
+    fastestDeliveryText: string | null;
+    primeBadgeVisible: boolean;
     sellerText: string | null;
     shipsFromText: string | null;
     soldByText: string | null;
@@ -648,6 +681,25 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
           '#ddmDeliveryMessage',
           '.a-color-success.a-text-bold',
         ]);
+        // Prime / fastest-delivery signals. Amazon shows a separate "Or
+        // fastest delivery <day>" line in the delivery block; capture it
+        // even when the primary delivery date is slower.
+        const fastestDeliveryText = (() => {
+          const blocks = $$('#mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage, #ddmDeliveryMessage, [data-csa-c-content-id="DEXUnifiedCXPDM"]');
+          for (const b of blocks) {
+            const t = text(b) ?? '';
+            const m = t.match(/Or fastest delivery\s+([^\n.]+)/i);
+            if (m) return m[1].trim();
+          }
+          // Fastest-delivery message can also appear as its own node.
+          const node = $('#mir-fastest-delivery-message, .a-color-success.a-text-bold');
+          const v = text(node) ?? '';
+          if (/tomorrow|overnight|today/i.test(v)) return v;
+          return null;
+        })();
+        const primeBadgeVisible = Boolean(
+          $('i.a-icon-prime, span.a-icon-prime, .a-icon-prime, #primeBadgeBranded, .prime-savings-badge'),
+        );
         const sellerText = tryAll(['#merchant-info', '[data-feature-name="merchantInfoFeature"]']);
         const shipsFromText = (() => {
           // Look for "Ships from" label in offer-display rows
@@ -716,6 +768,8 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
           availabilityText,
           buyable,
           deliveryText,
+          fastestDeliveryText,
+          primeBadgeVisible,
           sellerText,
           shipsFromText,
           soldByText,
@@ -738,6 +792,8 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
         availabilityText: null,
         buyable: false,
         deliveryText: null,
+        fastestDeliveryText: null,
+        primeBadgeVisible: false,
         sellerText: null,
         shipsFromText: null,
         soldByText: null,
@@ -805,6 +861,62 @@ function parsePriceCurrency(s: string | null | undefined): string | undefined {
   if (s.includes('€')) return 'EUR';
   if (/USD/i.test(s)) return 'USD';
   return undefined;
+}
+
+function computePrimeFlags(parsed: {
+  deliveryText: string | null;
+  fastestDeliveryText: string | null;
+  primeBadgeVisible: boolean;
+  shipsFromText: string | null;
+  soldByText: string | null;
+  sellerText: string | null;
+}): {
+  primeBadgeVisible: boolean;
+  primeInDeliveryText: boolean;
+  primeSignalDetected: boolean;
+  primeSignalSource?: string;
+  fbaSignalDetected: boolean;
+  shipsFromAmazon: boolean;
+  soldByAmazon: boolean;
+  fulfilledByAmazon: boolean;
+} {
+  const isAmazon = (s: string | null | undefined): boolean => {
+    if (!s) return false;
+    const lc = s.toLowerCase();
+    return /\bamazon(\.com)?\b/.test(lc) && !/3rd|third[- ]party/.test(lc);
+  };
+  const deliveryBlob = `${parsed.deliveryText ?? ''} ${parsed.fastestDeliveryText ?? ''}`;
+  const primeInDeliveryText = /\bprime\b/i.test(deliveryBlob) ||
+    /\bfree\s+(?:two[- ]day|same[- ]day|next[- ]day|one[- ]day|overnight|tomorrow)\b/i.test(deliveryBlob);
+  const shipsFromAmazon = isAmazon(parsed.shipsFromText);
+  const soldByAmazon = isAmazon(parsed.soldByText);
+  const sellerBlob = `${parsed.sellerText ?? ''} ${parsed.shipsFromText ?? ''} ${parsed.soldByText ?? ''}`;
+  const fulfilledByAmazon = /fulfilled\s+by\s+amazon/i.test(sellerBlob);
+
+  const sources: string[] = [];
+  if (parsed.primeBadgeVisible) sources.push('prime_badge');
+  if (primeInDeliveryText) sources.push('delivery_text_prime');
+  if (parsed.fastestDeliveryText && /tomorrow|overnight|same\s*day|today/i.test(parsed.fastestDeliveryText)) {
+    sources.push('fastest_delivery_overnight');
+  }
+  if (shipsFromAmazon) sources.push('ships_from_amazon');
+  if (soldByAmazon) sources.push('sold_by_amazon');
+  if (fulfilledByAmazon) sources.push('fulfilled_by_amazon');
+
+  const primeSignalDetected = parsed.primeBadgeVisible || primeInDeliveryText ||
+    (parsed.fastestDeliveryText !== null && /tomorrow|overnight|same\s*day|today/i.test(parsed.fastestDeliveryText));
+  const fbaSignalDetected = shipsFromAmazon || fulfilledByAmazon;
+
+  return {
+    primeBadgeVisible: parsed.primeBadgeVisible,
+    primeInDeliveryText,
+    primeSignalDetected,
+    primeSignalSource: sources.length > 0 ? sources.join(',') : undefined,
+    fbaSignalDetected,
+    shipsFromAmazon,
+    soldByAmazon,
+    fulfilledByAmazon,
+  };
 }
 
 function inferInStock(availabilityText: string | undefined | null, buyable: boolean | undefined): boolean {

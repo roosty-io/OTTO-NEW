@@ -99,6 +99,12 @@ async function main(): Promise<void> {
     console.log(`Amazon Basics          : ${d.isAmazonBasics}`);
     console.log(`used/renewed/refurb    : ${d.isRenewedOrRefurbished}`);
     console.log(`bundle / multipack     : ${d.isBundleOrMultipack}`);
+    console.log(`prime signal detected  : ${d.primeSignalDetected} ${d.primeSignalSource ? '(' + d.primeSignalSource + ')' : ''}`);
+    console.log(`fba signal detected    : ${d.fbaSignalDetected}`);
+    console.log(`ships from amazon      : ${d.shipsFromAmazon}`);
+    console.log(`sold by amazon         : ${d.soldByAmazon}`);
+    console.log(`shipping gate result   : ${d.shippingGateResult}  (${d.shippingConfidence})`);
+    console.log(`shipping review req    : ${d.shippingReviewRequired}`);
     console.log(`source validity score  : ${d.sourceValidityScore.toFixed(0)}`);
     console.log(`source valid           : ${d.sourceValid}`);
     if (!d.sourceValid) {

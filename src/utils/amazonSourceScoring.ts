@@ -1,5 +1,6 @@
 import { clamp, weightedAverage } from '@/utils/scoring';
 import type { DeliveryParseResult } from '@/utils/deliveryParser';
+import type { ShippingGateResult } from '@/utils/amazonShippingGate';
 
 export interface SourceScoringInput {
   pageLoaded: boolean;
@@ -16,6 +17,8 @@ export interface SourceScoringInput {
   hasHardRestriction: boolean;
   delivery: DeliveryParseResult;
   maxDeliveryDays: number;
+  /** New: shipping gate decides whether Prime/FBA signals override slow guest delivery. */
+  shippingGateResult?: ShippingGateResult;
 }
 
 export interface SourceScoringResult {
@@ -42,7 +45,7 @@ export function scoreAmazonSource(input: SourceScoringInput): SourceScoringResul
     ? 0
     : clamp(100 - input.restrictedSignalCount * 20);
 
-  const deliveryScore = computeDeliveryScore(input.delivery, input.maxDeliveryDays);
+  const deliveryScore = computeDeliveryScore(input.delivery, input.maxDeliveryDays, input.shippingGateResult);
 
   const sourceValidityScore = clamp(
     weightedAverage([
@@ -74,14 +77,32 @@ export function scoreAmazonSource(input: SourceScoringInput): SourceScoringResul
   };
 }
 
-function computeDeliveryScore(d: DeliveryParseResult, maxDays: number): number {
+function computeDeliveryScore(
+  d: DeliveryParseResult,
+  maxDays: number,
+  gate?: ShippingGateResult,
+): number {
   // Explicit out-of-stock text -> hard zero.
   if (d.signals.includes('out_of_stock_text')) return 0;
+
+  // The shipping gate is the source of truth when it has been evaluated.
+  // Prime/FBA-likely passes get medium scores even when guest delivery is
+  // slow or unclear; rejects always get zero.
+  if (gate === 'reject') return 0;
+  if (gate === 'prime_likely_pass') {
+    // Medium when we DO have parsed (but slow) days, lower when delivery
+    // text was unparseable.
+    if (d.estimatedDeliveryDays !== undefined) return 65;
+    return 50;
+  }
+  if (gate === 'pass') return 100;
+
+  // No gate was supplied (legacy call sites) - fall back to the old behavior.
   if (d.deliveryPassesMaxWindow === false) return 0;
   if (d.estimatedDeliveryDays !== undefined && d.estimatedDeliveryDays > maxDays) return 0;
   if (d.deliveryParseConfidence === 'high') return 100;
   if (d.deliveryParseConfidence === 'medium') return 75;
-  if (d.deliveryParseConfidence === 'low') return 40; // not auto-pass; caller decides
+  if (d.deliveryParseConfidence === 'low') return 40;
   return 0;
 }
 

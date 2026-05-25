@@ -54,6 +54,17 @@ export const EXPORT_COLUMNS = [
   'final_validation_score',
   'validation_status',
   'validated_at',
+  // Shipping gate / Prime signals
+  'raw_delivery_text',
+  'delivery_context',
+  'prime_signal_detected',
+  'prime_signal_source',
+  'fba_signal_detected',
+  'ships_from_amazon',
+  'sold_by_amazon',
+  'fulfilled_by_amazon',
+  'shipping_gate_result',
+  'shipping_review_required',
 ];
 
 export interface CsvExportInput {
@@ -151,6 +162,16 @@ export class CsvExportAgent {
       final_validation_score: p.finalValidationScore,
       validation_status: p.validationStatus,
       validated_at: p.validatedAt,
+      raw_delivery_text: p.rawDeliveryText,
+      delivery_context: p.deliveryContext,
+      prime_signal_detected: p.primeSignalDetected,
+      prime_signal_source: p.primeSignalSource,
+      fba_signal_detected: p.fbaSignalDetected,
+      ships_from_amazon: p.shipsFromAmazon,
+      sold_by_amazon: p.soldByAmazon,
+      fulfilled_by_amazon: p.fulfilledByAmazon,
+      shipping_gate_result: p.shippingGateResult,
+      shipping_review_required: p.shippingReviewRequired,
     }));
 
     const { filePath, rowCount } = writeCsv(env.exportDir, filename, EXPORT_COLUMNS, rows);
