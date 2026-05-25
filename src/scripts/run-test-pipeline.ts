@@ -9,6 +9,7 @@ import { BasicAmazonAsinResolverAgent } from '@/agents/asin/BasicAmazonAsinResol
 import { AmazonSourceValidationAgent } from '@/agents/amazon/AmazonSourceValidationAgent';
 import { EbayDemandScoringAgent } from '@/agents/ebay/EbayDemandScoringAgent';
 import { ComplianceRiskCouncil } from '@/agents/compliance/ComplianceRiskCouncil';
+import { BusinessFitAgent } from '@/agents/businessFit/BusinessFitAgent';
 import { CostCalculationAgent } from '@/agents/cost/CostCalculationAgent';
 import { FinalValidationAgent } from '@/agents/validation/FinalValidationAgent';
 import { CsvExportAgent } from '@/agents/export/CsvExportAgent';
@@ -70,6 +71,7 @@ async function main(): Promise<void> {
   const amazonAgent = new AmazonSourceValidationAgent();
   const demandAgent = new EbayDemandScoringAgent();
   const complianceAgent = new ComplianceRiskCouncil();
+  const businessFitAgent = new BusinessFitAgent();
   const costAgent = new CostCalculationAgent();
   const finalAgent = new FinalValidationAgent();
 
@@ -133,14 +135,37 @@ async function main(): Promise<void> {
     if (!complianceResult.data.compliancePassed) continue;
     stats.complianceValid++;
 
-    // 6. Cost
+    // 6. Business fit
+    const businessFitResult = await businessFitAgent.run({
+      ottoProductId: candidate.ottoProductId,
+      asin: asinResult.data.asin,
+      amazonUrl: asinResult.data.amazonUrl,
+      amazonPrice,
+      productTitle: amazonData.productTitle ?? candidate.productTitleRaw,
+      brand: amazonData.brand ?? candidate.brandHint,
+      amazonCategoryBreadcrumbs: amazonData.categoryBreadcrumbs,
+      estimatedDeliveryDays: amazonData.estimatedDeliveryDays,
+      relevantComparableCount: demandResult.data.relevantComparableCount,
+      exactOrSimilarMatchCount: demandResult.data.exactOrSimilarMatchCount,
+      duplicateRatio: demandResult.data.duplicateRatio,
+      sellerConcentrationScore: demandResult.data.sellerConcentrationScore,
+      competitionDensityScore: demandResult.data.competitionDensityScore,
+      stagnationRiskScore: demandResult.data.stagnationRiskScore,
+      sellWithin30DaysConfidence: demandResult.data.sellWithin30DaysConfidence,
+      saturationScore: demandResult.data.saturationScore,
+      policyRiskScore: complianceResult.data.policyRiskScore,
+      runId,
+    });
+    if (!businessFitResult.data.businessFitPassed) continue;
+
+    // 7. Cost
     const costResult = await costAgent.run({
       ottoProductId: candidate.ottoProductId,
       amazonPrice,
       runId,
     });
 
-    // 7. Final
+    // 8. Final
     const finalResult = await finalAgent.run({
       ottoProductId: candidate.ottoProductId,
       asin: asinResult.data.asin,
@@ -148,6 +173,7 @@ async function main(): Promise<void> {
       amazon: amazonResult.data,
       demand: demandResult.data,
       compliance: complianceResult.data,
+      businessFit: businessFitResult.data,
       runId,
     });
     if (!finalResult.data.passed) continue;

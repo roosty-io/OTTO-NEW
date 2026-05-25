@@ -368,6 +368,27 @@ create table if not exists deduped_products (
   created_at timestamptz not null default now()
 );
 
+create table if not exists business_fit_checks (
+  id uuid primary key default gen_random_uuid(),
+  otto_product_id text not null,
+  asin text,
+  amazon_url text,
+  amazon_price numeric,
+  product_title text,
+  brand text,
+  business_fit_score numeric,
+  price_quality_score numeric,
+  saturation_quality_score numeric,
+  bulkiness_risk_score numeric,
+  brand_caution_score numeric,
+  manual_qa_pattern_penalty numeric,
+  business_fit_passed boolean,
+  business_fit_rejection_reason text,
+  reason_codes text[] default '{}',
+  notes text[] default '{}',
+  created_at timestamptz not null default now()
+);
+
 create table if not exists manual_qa_reviews (
   id uuid primary key default gen_random_uuid(),
   otto_product_id text,
@@ -524,6 +545,8 @@ create index if not exists idx_ebay_demand_checks_passed on ebay_demand_checks(d
 create index if not exists idx_compliance_checks_product on compliance_checks(otto_product_id);
 create index if not exists idx_compliance_checks_passed on compliance_checks(compliance_passed);
 create index if not exists idx_compliance_checks_block on compliance_checks(hard_block);
+create index if not exists idx_business_fit_checks_product on business_fit_checks(otto_product_id);
+create index if not exists idx_business_fit_checks_passed on business_fit_checks(business_fit_passed);
 create index if not exists idx_deduped_products_asin on deduped_products(asin);
 create index if not exists idx_deduped_products_batch on deduped_products(export_batch_id);
 create index if not exists idx_manual_qa_reviews_asin on manual_qa_reviews(asin);

@@ -119,6 +119,10 @@ export const BRAND_ENTRIES: BrandEntry[] = [
   { brand: 'Hydro Flask', category: 'home_brand', hardBlock: true },
   { brand: 'Owala', category: 'home_brand', hardBlock: true },
   { brand: 'Tupperware', category: 'home_brand', hardBlock: true },
+  // Added after manual QA feedback (limit=25 review flagged Fiskars as
+  // brand caution / VeRO risk).  Treated as hard block to keep V1 safe;
+  // can be relaxed to manual_review later if appropriate.
+  { brand: 'Fiskars', category: 'vero', hardBlock: true },
   // Self-source brand
   { brand: 'Amazon Basics', aliases: ['AmazonBasics'], category: 'general', hardBlock: true },
 ];

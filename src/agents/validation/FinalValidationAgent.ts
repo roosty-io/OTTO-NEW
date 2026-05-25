@@ -7,6 +7,7 @@ import { RejectionReason } from '@/utils/rejectionReasons';
 import type { AgentResult } from '@/types/agent';
 import type { ComplianceScoreBundle, DemandScoreBundle } from '@/types/validation';
 import type { AmazonValidationData } from '@/agents/amazon/AmazonSourceValidationAgent';
+import type { BusinessFitData } from '@/agents/businessFit/BusinessFitAgent';
 
 export interface FinalValidationInput {
   ottoProductId: string;
@@ -15,6 +16,7 @@ export interface FinalValidationInput {
   amazon?: AmazonValidationData;
   demand?: DemandScoreBundle;
   compliance?: ComplianceScoreBundle;
+  businessFit?: BusinessFitData;
   runId?: string;
 }
 
@@ -79,6 +81,19 @@ export class FinalValidationAgent {
       );
     }
 
+    const bf = input.businessFit;
+    if (!bf) {
+      fail(RejectionReason.BUSINESS_FIT_FAILED, 'Missing business fit result');
+    } else if (!bf.businessFitPassed) {
+      fail(bf.businessFitRejectionReason ?? RejectionReason.BUSINESS_FIT_FAILED,
+        `business_fit_score ${bf.businessFitScore.toFixed(0)} (${bf.businessFitRejectionReason ?? 'failed'})`);
+    } else if (bf.businessFitScore < THRESHOLDS.MIN_BUSINESS_FIT_SCORE) {
+      fail(
+        RejectionReason.BUSINESS_FIT_FAILED,
+        `business_fit_score ${bf.businessFitScore.toFixed(0)} < ${THRESHOLDS.MIN_BUSINESS_FIT_SCORE}`,
+      );
+    }
+
     const finalValidationScore = computeFinalScore(input);
     if (finalValidationScore < THRESHOLDS.MIN_FINAL_VALIDATION_SCORE) {
       fail(
@@ -126,11 +141,14 @@ export class FinalValidationAgent {
 function computeFinalScore(input: FinalValidationInput): number {
   const d = input.demand;
   const c = input.compliance;
+  const bf = input.businessFit;
   const parts: { value: number; weight: number }[] = [];
-  if (d) parts.push({ value: d.demandScore, weight: 0.4 });
-  if (d) parts.push({ value: d.sellWithin30DaysConfidence, weight: 0.3 });
-  if (c) parts.push({ value: 100 - c.policyRiskScore, weight: 0.2 });
+  if (d) parts.push({ value: d.demandScore, weight: 0.3 });
+  if (d) parts.push({ value: d.sellWithin30DaysConfidence, weight: 0.25 });
+  if (c) parts.push({ value: 100 - c.policyRiskScore, weight: 0.15 });
   if (d) parts.push({ value: 100 - d.stagnationRiskScore, weight: 0.1 });
+  // business fit is now part of the final composite (learned from manual QA).
+  if (bf) parts.push({ value: bf.businessFitScore, weight: 0.2 });
   if (parts.length === 0) return 0;
   return clamp(weightedAverage(parts));
 }

@@ -35,6 +35,7 @@ import { BasicAmazonAsinResolverAgent } from '@/agents/asin/BasicAmazonAsinResol
 import { AmazonSourceValidationAgent } from '@/agents/amazon/AmazonSourceValidationAgent';
 import { EbayDemandScoringAgent } from '@/agents/ebay/EbayDemandScoringAgent';
 import { ComplianceRiskCouncil } from '@/agents/compliance/ComplianceRiskCouncil';
+import { BusinessFitAgent } from '@/agents/businessFit/BusinessFitAgent';
 import { CostCalculationAgent } from '@/agents/cost/CostCalculationAgent';
 import { FinalValidationAgent } from '@/agents/validation/FinalValidationAgent';
 import { CsvExportAgent, dedupeByAsin } from '@/agents/export/CsvExportAgent';
@@ -64,6 +65,8 @@ interface PipelineStats {
   demandFailed: number;
   compliancePassed: number;
   complianceFailed: number;
+  businessFitPassed: number;
+  businessFitFailed: number;
   costCalculated: number;
   finalValidated: number;
   finalRejected: number;
@@ -138,6 +141,8 @@ async function main(): Promise<void> {
     demandFailed: 0,
     compliancePassed: 0,
     complianceFailed: 0,
+    businessFitPassed: 0,
+    businessFitFailed: 0,
     costCalculated: 0,
     finalValidated: 0,
     finalRejected: 0,
@@ -163,6 +168,7 @@ async function main(): Promise<void> {
   const amazonAgent = new AmazonSourceValidationAgent();
   const demandAgent = new EbayDemandScoringAgent();
   const complianceAgent = new ComplianceRiskCouncil();
+  const businessFitAgent = new BusinessFitAgent();
   const costAgent = new CostCalculationAgent();
   const finalAgent = new FinalValidationAgent();
 
@@ -270,7 +276,35 @@ async function main(): Promise<void> {
     }
     stats.compliancePassed++;
 
-    // 6. Cost
+    // 6. Business fit (price quality / saturation / bulkiness / brand caution)
+    const businessFitResult = await businessFitAgent.run({
+      ottoProductId: candidate.ottoProductId,
+      asin: asinResult.data.asin,
+      amazonUrl: asinResult.data.amazonUrl,
+      amazonPrice,
+      productTitle: amazonData.productTitle ?? candidate.productTitleRaw,
+      brand: amazonData.brand ?? candidate.brandHint,
+      amazonCategoryBreadcrumbs: amazonData.categoryBreadcrumbs,
+      estimatedDeliveryDays: amazonData.estimatedDeliveryDays,
+      relevantComparableCount: demandResult.data.relevantComparableCount,
+      exactOrSimilarMatchCount: demandResult.data.exactOrSimilarMatchCount,
+      duplicateRatio: demandResult.data.duplicateRatio,
+      sellerConcentrationScore: demandResult.data.sellerConcentrationScore,
+      competitionDensityScore: demandResult.data.competitionDensityScore,
+      stagnationRiskScore: demandResult.data.stagnationRiskScore,
+      sellWithin30DaysConfidence: demandResult.data.sellWithin30DaysConfidence,
+      saturationScore: demandResult.data.saturationScore,
+      policyRiskScore: complianceResult.data.policyRiskScore,
+      runId,
+    });
+    if (!businessFitResult.data.businessFitPassed) {
+      stats.businessFitFailed++;
+      bump(businessFitResult.data.businessFitRejectionReason ?? RejectionReason.BUSINESS_FIT_FAILED);
+      continue;
+    }
+    stats.businessFitPassed++;
+
+    // 7. Cost
     const costResult = await costAgent.run({
       ottoProductId: candidate.ottoProductId,
       amazonPrice,
@@ -278,7 +312,7 @@ async function main(): Promise<void> {
     });
     stats.costCalculated++;
 
-    // 7. Final
+    // 8. Final
     const finalResult = await finalAgent.run({
       ottoProductId: candidate.ottoProductId,
       asin: asinResult.data.asin,
@@ -286,6 +320,7 @@ async function main(): Promise<void> {
       amazon: amazonResult.data,
       demand: demandResult.data,
       compliance: complianceResult.data,
+      businessFit: businessFitResult.data,
       runId,
     });
     if (!finalResult.data.passed) {
@@ -516,6 +551,8 @@ function printSummary(args: {
   console.log(`  demand failed        : ${stats.demandFailed}`);
   console.log(`  compliance passed    : ${stats.compliancePassed}`);
   console.log(`  compliance failed    : ${stats.complianceFailed}`);
+  console.log(`  business fit passed  : ${stats.businessFitPassed}`);
+  console.log(`  business fit failed  : ${stats.businessFitFailed}`);
   console.log(`  cost calculated      : ${stats.costCalculated}`);
   console.log(`  final validated      : ${stats.finalValidated}`);
   console.log(`  final rejected       : ${stats.finalRejected}`);
@@ -765,6 +802,8 @@ function writeReport(args: SuccessReportArgs): string {
   lines.push(`| demand failed | ${args.stats.demandFailed} |`);
   lines.push(`| compliance passed | ${args.stats.compliancePassed} |`);
   lines.push(`| compliance failed | ${args.stats.complianceFailed} |`);
+  lines.push(`| business fit passed | ${args.stats.businessFitPassed} |`);
+  lines.push(`| business fit failed | ${args.stats.businessFitFailed} |`);
   lines.push(`| cost calculated | ${args.stats.costCalculated} |`);
   lines.push(`| final validated | ${args.stats.finalValidated} |`);
   lines.push(`| final rejected | ${args.stats.finalRejected} |`);
