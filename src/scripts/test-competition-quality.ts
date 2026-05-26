@@ -58,10 +58,10 @@ const CASES: Case[] = [
     label: 'many sellers + high sell confidence but low differentiation -> borderline',
     input: {
       ...BASE,
-      relevantComparableCount: 20,
-      exactOrSimilarMatchCount: 11, // just under the 12 saturation step
-      sellerCount: 17,
-      duplicateRatio: 18,
+      relevantComparableCount: 22,
+      exactOrSimilarMatchCount: 14,
+      sellerCount: 18,
+      duplicateRatio: 25,
       sellWithin30DaysConfidence: 90,
       priceViabilityScore: 75,
     },

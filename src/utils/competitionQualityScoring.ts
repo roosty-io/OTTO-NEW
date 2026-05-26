@@ -155,29 +155,38 @@ function computeSellerCompetition(input: CompetitionInput, notes: string[]): num
 }
 
 function computeExactMatchSaturation(input: CompetitionInput, notes: string[]): number {
+  // Tolerate commodity organizer ranges (8-18 exact matches is normal for
+  // a healthy market); only fire hard once exact saturation is extreme.
   const exact = input.exactOrSimilarMatchCount ?? 0;
   const relevant = input.relevantComparableCount ?? 0;
   let s = 0;
-  if (exact >= 25) s = 90;
-  else if (exact >= 18) s = 75;
-  else if (exact >= 12) s = 55;
-  else if (exact >= 8) s = 30;
-  // If exact matches dominate the relevant set, increase further.
-  if (relevant > 0) {
+  if (exact >= 30) s = 85;
+  else if (exact >= 20) s = 70;
+  else if (exact >= 14) s = 50;
+  else if (exact >= 9) s = 25;
+  // If exact matches dominate the relevant set AND there are a lot of
+  // them, push the score up further. Only fires when both are true so it
+  // doesn't trip on small data sets.
+  if (relevant >= 10) {
     const ratio = exact / relevant;
-    if (ratio >= 0.7 && exact >= 10) s = Math.max(s, 80);
+    if (ratio >= 0.85 && exact >= 14) s = Math.max(s, 80);
   }
   if (s > 0) notes.push(`exact_match_saturation exact=${exact} relevant=${relevant}`);
   return clamp(s);
 }
 
 function computeDuplicateListing(input: CompetitionInput, notes: string[]): number {
+  // duplicateRatio is computed from first-6-token signatures across
+  // relevant comparables. Commodity organizer markets (kneeling pads,
+  // craft storage boxes) naturally share signatures across many sellers
+  // without being actual duplicate listings, so the curve below tolerates
+  // moderate duplication and only fires hard on extreme overlap.
   const dup = input.duplicateRatio ?? 0;
   let s = 0;
-  if (dup >= 50) s = 85;
-  else if (dup >= 35) s = 65;
-  else if (dup >= 25) s = 45;
-  else if (dup >= 15) s = 20;
+  if (dup >= 75) s = 80;
+  else if (dup >= 60) s = 60;
+  else if (dup >= 45) s = 35;
+  else if (dup >= 30) s = 15;
   if (s > 0) notes.push(`duplicate_listing dup_ratio=${dup.toFixed(0)}`);
   return clamp(s);
 }
