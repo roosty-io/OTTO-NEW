@@ -33,6 +33,9 @@ export interface CompetitionInput {
   // Sell-side signals.
   sellWithin30DaysConfidence?: number;
   stagnationRiskScore?: number;
+  // Compliance-side signal (so the gate can apply the healthy-competition
+  // rescue only when policy risk is low).
+  policyRiskScore?: number;
 }
 
 export type CompetitionGateResult = 'healthy' | 'borderline' | 'saturated';
@@ -96,7 +99,7 @@ export function scoreCompetitionQuality(input: CompetitionInput): CompetitionOut
     priceCompression * 0.25;
   const competitionQualityScore = clamp(100 - drag);
 
-  // Gate decision.
+  // Gate decision (V1.4: combined-evidence, healthy-competition rescue).
   const { result, code } = decideGate({
     competitionQualityScore,
     sellerCompetitionScore: sellerCompetition,
@@ -107,6 +110,13 @@ export function scoreCompetitionQuality(input: CompetitionInput): CompetitionOut
     priceViability: input.priceViabilityScore ?? 0,
     differentiationScore,
     isGenericCommodity,
+    sellerCount: input.sellerCount ?? 0,
+    exactOrSimilarMatchCount: input.exactOrSimilarMatchCount ?? 0,
+    duplicateRatio: input.duplicateRatio ?? 0,
+    stagnationRiskScore: input.stagnationRiskScore ?? 0,
+    competitionDensityScore: input.competitionDensityScore ?? 0,
+    amazonPrice: input.amazonPrice ?? 0,
+    policyRiskScore: input.policyRiskScore ?? 0,
     notes,
     reasonCodes,
   });
@@ -263,51 +273,109 @@ interface GateInput {
   priceViability: number;
   differentiationScore: number;
   isGenericCommodity: boolean;
+  sellerCount: number;
+  exactOrSimilarMatchCount: number;
+  duplicateRatio: number;
+  stagnationRiskScore: number;
+  competitionDensityScore: number;
+  amazonPrice: number;
+  policyRiskScore: number;
   notes: string[];
   reasonCodes: string[];
 }
 
+// V1.4 combined-evidence gate.  HIGH_SELLER_COMPETITION alone is no longer
+// a hard rejection - the operator's prior manual QA was 85% PASS even on
+// products with many sellers, so demand can offset crowded markets.  We
+// only hard-fail when two or more saturation axes co-occur, or when one
+// of three explicit "truly saturated" combos triggers.
 function decideGate(g: GateInput): { result: CompetitionGateResult; code?: string } {
-  // Hard fails first (any single axis past its max).
-  if (g.priceCompressionScore > THRESHOLDS.MAX_PRICE_COMPRESSION_SCORE) {
-    g.reasonCodes.push(RejectionReason.PRICE_COMPRESSED_MARKET);
-    g.reasonCodes.push(RejectionReason.LOW_MARGIN_COMPETITIVE_MARKET);
-    g.notes.push(`price compression ${g.priceCompressionScore.toFixed(0)} > ${THRESHOLDS.MAX_PRICE_COMPRESSION_SCORE}`);
-    return { result: 'saturated', code: RejectionReason.PRICE_COMPRESSED_MARKET };
-  }
-  if (g.duplicateListingScore > THRESHOLDS.MAX_DUPLICATE_LISTING_SCORE) {
-    g.reasonCodes.push(RejectionReason.HIGH_DUPLICATE_MARKET);
-    g.notes.push(`duplicate listings ${g.duplicateListingScore.toFixed(0)} > ${THRESHOLDS.MAX_DUPLICATE_LISTING_SCORE}`);
+  // ---- 1. Truly-saturated combos (any one -> hard reject) -----------
+  // a) Heavy duplication + many similar listings -> commodity race.
+  const dupHotRaw = g.duplicateRatio >= 50;
+  const exactHotRaw = g.exactOrSimilarMatchCount >= 20;
+  if (dupHotRaw && exactHotRaw) {
+    g.reasonCodes.push(RejectionReason.HIGH_DUPLICATE_MARKET, RejectionReason.EXACT_MATCH_SATURATION);
+    g.notes.push(`truly saturated: dup=${g.duplicateRatio.toFixed(0)}% + exact=${g.exactOrSimilarMatchCount}`);
     return { result: 'saturated', code: RejectionReason.HIGH_DUPLICATE_MARKET };
   }
-  if (g.sellerCompetitionScore > THRESHOLDS.MAX_SELLER_COMPETITION_SCORE) {
-    // High seller competition CAN be tolerated only when sell confidence is
-    // very high AND price viability is strong (true demand pulling margin
-    // through). Otherwise reject.
-    if (g.sellConfidence >= 88 && g.priceViability >= 70 && g.differentiationScore >= 60) {
-      g.notes.push(`high seller competition tolerated: strong demand+viability+differentiation`);
-    } else {
-      g.reasonCodes.push(RejectionReason.HIGH_SELLER_COMPETITION);
-      g.notes.push(`seller competition ${g.sellerCompetitionScore.toFixed(0)} > ${THRESHOLDS.MAX_SELLER_COMPETITION_SCORE}`);
-      return { result: 'saturated', code: RejectionReason.HIGH_SELLER_COMPETITION };
-    }
+  // b) Price compression + lots of sellers -> race-to-the-bottom market.
+  const compHot = g.priceCompressionScore > THRESHOLDS.MAX_PRICE_COMPRESSION_SCORE;
+  const sellerLargeRaw = g.sellerCount >= 25;
+  if (compHot && sellerLargeRaw) {
+    g.reasonCodes.push(RejectionReason.PRICE_COMPRESSED_MARKET, RejectionReason.LOW_MARGIN_COMPETITIVE_MARKET);
+    g.notes.push(`truly saturated: price_comp=${g.priceCompressionScore.toFixed(0)} + sellers=${g.sellerCount}`);
+    return { result: 'saturated', code: RejectionReason.PRICE_COMPRESSED_MARKET };
   }
-  if (g.exactMatchSaturationScore > THRESHOLDS.MAX_EXACT_MATCH_SATURATION_SCORE) {
-    // Same conditional pass as seller competition.
-    if (g.sellConfidence >= 88 && g.priceViability >= 70 && g.differentiationScore >= 60) {
-      g.notes.push(`exact-match saturation tolerated: strong demand+viability+differentiation`);
-    } else {
-      g.reasonCodes.push(RejectionReason.EXACT_MATCH_SATURATION);
-      g.reasonCodes.push(RejectionReason.TOO_MANY_SIMILAR_LISTINGS);
-      g.notes.push(`exact-match saturation ${g.exactMatchSaturationScore.toFixed(0)} > ${THRESHOLDS.MAX_EXACT_MATCH_SATURATION_SCORE}`);
-      return { result: 'saturated', code: RejectionReason.EXACT_MATCH_SATURATION };
-    }
+  // c) Generic commodity + dense competition + elevated stagnation.
+  const commodityCrowded =
+    g.isGenericCommodity && g.competitionDensityScore >= 70 && g.stagnationRiskScore >= 30;
+  if (commodityCrowded) {
+    g.reasonCodes.push(RejectionReason.SATURATED_GENERIC_PRODUCT, RejectionReason.GENERIC_COMMODITY_MARKET);
+    g.notes.push(
+      `truly saturated: generic commodity + comp_density=${g.competitionDensityScore.toFixed(0)} + stagnation=${g.stagnationRiskScore.toFixed(0)}`,
+    );
+    return { result: 'saturated', code: RejectionReason.SATURATED_GENERIC_PRODUCT };
   }
-  if (g.competitionQualityScore < THRESHOLDS.MIN_COMPETITION_QUALITY_SCORE) {
+
+  // ---- 2. Count "hot" axes for combined-evidence judging ------------
+  const sellerHot = g.sellerCompetitionScore > THRESHOLDS.MAX_SELLER_COMPETITION_SCORE;
+  const exactHot = g.exactMatchSaturationScore > THRESHOLDS.MAX_EXACT_MATCH_SATURATION_SCORE;
+  const dupHot = g.duplicateListingScore > THRESHOLDS.MAX_DUPLICATE_LISTING_SCORE;
+  const stagHot = g.stagnationRiskScore >= 30;
+  const lowDiff = g.differentiationScore < 50;
+  const negSignals = [sellerHot, exactHot, dupHot, compHot, stagHot, lowDiff].filter(Boolean).length;
+
+  if (negSignals >= 3) {
+    // Three or more hot axes is genuinely saturated even if none of the
+    // explicit combos above tripped.
+    if (sellerHot) g.reasonCodes.push(RejectionReason.HIGH_SELLER_COMPETITION);
+    if (exactHot) g.reasonCodes.push(RejectionReason.EXACT_MATCH_SATURATION);
+    if (dupHot) g.reasonCodes.push(RejectionReason.HIGH_DUPLICATE_MARKET);
+    if (compHot) g.reasonCodes.push(RejectionReason.PRICE_COMPRESSED_MARKET);
     if (g.isGenericCommodity) g.reasonCodes.push(RejectionReason.GENERIC_COMMODITY_MARKET);
     g.reasonCodes.push(RejectionReason.COMPETITION_GATE_FAILED);
-    g.notes.push(`competition quality ${g.competitionQualityScore.toFixed(0)} < ${THRESHOLDS.MIN_COMPETITION_QUALITY_SCORE}`);
+    g.notes.push(`competition: ${negSignals} hot axes (saturated)`);
     return { result: 'saturated', code: RejectionReason.COMPETITION_GATE_FAILED };
+  }
+
+  // ---- 3. Healthy-competition rescue ---------------------------------
+  // Strong demand + low compression + low stagnation + low duplicate
+  // ratio + good price + low policy risk -> allow even when one axis is
+  // hot or competitionQuality is mid-band.
+  const healthyRescue =
+    g.sellConfidence >= 85 &&
+    g.priceCompressionScore < 40 &&
+    g.stagnationRiskScore <= 25 &&
+    g.duplicateRatio < 40 &&
+    g.amazonPrice >= 12 &&
+    g.policyRiskScore <= 25;
+  if (healthyRescue && negSignals <= 1) {
+    g.reasonCodes.push(RejectionReason.HEALTHY_COMPETITION_PASS);
+    g.notes.push(
+      `healthy competition rescue: sell=${g.sellConfidence.toFixed(0)} ` +
+        `price_comp=${g.priceCompressionScore.toFixed(0)} stag=${g.stagnationRiskScore.toFixed(0)} ` +
+        `dup=${g.duplicateRatio.toFixed(0)}% price=$${g.amazonPrice.toFixed(2)} ` +
+        `policy=${g.policyRiskScore.toFixed(0)}`,
+    );
+    return { result: 'healthy' };
+  }
+
+  // ---- 4. Borderline ------------------------------------------------
+  if (negSignals === 2) {
+    if (sellerHot) g.reasonCodes.push(RejectionReason.HIGH_SELLER_COMPETITION);
+    if (exactHot) g.reasonCodes.push(RejectionReason.EXACT_MATCH_SATURATION);
+    if (dupHot) g.reasonCodes.push(RejectionReason.HIGH_DUPLICATE_MARKET);
+    if (compHot) g.reasonCodes.push(RejectionReason.PRICE_COMPRESSED_MARKET);
+    g.notes.push(`competition: 2 hot axes - borderline`);
+    return { result: 'borderline' };
+  }
+  if (g.competitionQualityScore < THRESHOLDS.MIN_COMPETITION_QUALITY_SCORE) {
+    // Quality drag below the floor with <2 hot axes - mark borderline, not
+    // saturated. Avoids the previous behavior of failing on a single hot
+    // signal.
+    g.notes.push(`competition quality ${g.competitionQualityScore.toFixed(0)} - borderline`);
+    return { result: 'borderline' };
   }
   if (g.competitionQualityScore < 75) {
     if (g.isGenericCommodity) g.reasonCodes.push(RejectionReason.GENERIC_COMMODITY_MARKET);

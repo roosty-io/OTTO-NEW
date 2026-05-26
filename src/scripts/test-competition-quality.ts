@@ -55,22 +55,39 @@ const CASES: Case[] = [
     expectGate: 'healthy',
   },
   {
-    label: 'many sellers + high sell confidence but low differentiation -> borderline',
+    // V1.4: borderline now requires 2 hot axes (combined evidence).  This
+    // case has sellerHot + exactHot but is NOT rescued because dup_ratio
+    // is at the 40 boundary (rescue requires < 40).
+    label: 'many sellers + high exact-match saturation but moderate dup -> borderline',
     input: {
       ...BASE,
-      relevantComparableCount: 25,
-      exactOrSimilarMatchCount: 16,
-      sellerCount: 28,
+      relevantComparableCount: 30,
+      exactOrSimilarMatchCount: 22,
+      sellerCount: 32,
       sellerConcentrationScore: 12,
-      duplicateRatio: 35,
-      sellWithin30DaysConfidence: 90,
-      priceViabilityScore: 75,
+      duplicateRatio: 40,
+      sellWithin30DaysConfidence: 88,
+      priceViabilityScore: 65,
     },
     expectGate: 'borderline',
   },
   {
-    label: 'generic commodity product + high exact-match saturation -> reject',
-    input: { ...BASE, productTitle: 'BTSKY 3-Layer Craft Storage Box Organizer', exactOrSimilarMatchCount: 22, duplicateRatio: 35, sellerCount: 14, medianComparablePrice: 28, priceViabilityScore: 45 },
+    // V1.4: generic + high exact saturation alone is no longer enough.
+    // To hard-reject we now require generic + dense competition + elevated
+    // stagnation, OR a 3+ hot-axis combo.  This case provides all three
+    // combo-c signals so it still rejects.
+    label: 'generic commodity + high exact saturation + dense competition + stagnation -> reject',
+    input: {
+      ...BASE,
+      productTitle: 'BTSKY 3-Layer Craft Storage Box Organizer',
+      exactOrSimilarMatchCount: 22,
+      duplicateRatio: 35,
+      sellerCount: 14,
+      competitionDensityScore: 75,
+      stagnationRiskScore: 35,
+      medianComparablePrice: 28,
+      priceViabilityScore: 45,
+    },
     expectGate: 'saturated',
     expectGenericCommodity: true,
   },
