@@ -288,9 +288,15 @@ async function main(): Promise<void> {
       estimatedDeliveryDays: amazonData.estimatedDeliveryDays,
       relevantComparableCount: demandResult.data.relevantComparableCount,
       exactOrSimilarMatchCount: demandResult.data.exactOrSimilarMatchCount,
-      duplicateRatio: demandResult.data.duplicateRatio,
+      sellerCount: demandResult.data.sellerCount,
       sellerConcentrationScore: demandResult.data.sellerConcentrationScore,
+      duplicateRatio: demandResult.data.duplicateRatio,
       competitionDensityScore: demandResult.data.competitionDensityScore,
+      medianComparablePrice: demandResult.data.medianComparablePrice,
+      avgComparablePrice: demandResult.data.avgComparablePrice,
+      priceBandMin: demandResult.data.priceBandMin,
+      priceBandMax: demandResult.data.priceBandMax,
+      priceViabilityScore: demandResult.data.priceViabilityScore,
       stagnationRiskScore: demandResult.data.stagnationRiskScore,
       sellWithin30DaysConfidence: demandResult.data.sellWithin30DaysConfidence,
       saturationScore: demandResult.data.saturationScore,
@@ -353,6 +359,18 @@ async function main(): Promise<void> {
       fulfilledByAmazon: amazonData.fulfilledByAmazon,
       shippingGateResult: amazonData.shippingGateResult,
       shippingReviewRequired: amazonData.shippingReviewRequired,
+      competitionQualityScore: businessFitResult.data.competitionQualityScore,
+      sellerCompetitionScore: businessFitResult.data.sellerCompetitionScore,
+      exactMatchSaturationScore: businessFitResult.data.exactMatchSaturationScore,
+      duplicateListingScore: businessFitResult.data.duplicateListingScore,
+      priceCompressionScore: businessFitResult.data.priceCompressionScore,
+      sameSourceLikelihoodScore: businessFitResult.data.sameSourceLikelihoodScore,
+      isGenericCommodity: businessFitResult.data.isGenericCommodity,
+      competitionGateResult: businessFitResult.data.competitionGateResult,
+      competitionRejectionReason: businessFitResult.data.competitionRejectionReason,
+      sellerCount: demandResult.data.sellerCount,
+      exactOrSimilarMatchCount: demandResult.data.exactOrSimilarMatchCount,
+      duplicateRatio: demandResult.data.duplicateRatio,
       sourceConfidenceScore: asinResult.score,
       productMatchType: asinResult.score >= 80 ? 'exact' : 'similar',
       opportunityType: 'direct_match',
@@ -481,6 +499,15 @@ function writeManualQaCsv(products: ValidatedProduct[]): string {
     'fulfilled_by_amazon',
     'shipping_gate_result',
     'shipping_review_required',
+    'competition_quality_score',
+    'exact_match_saturation_score',
+    'duplicate_listing_score',
+    'price_compression_score',
+    'seller_count',
+    'exact_or_similar_match_count',
+    'duplicate_ratio',
+    'competition_gate_result',
+    'competition_rejection_reason',
     'sell_within_30_days_confidence',
     'stagnation_risk_score',
     'policy_risk_score',
@@ -509,6 +536,15 @@ function writeManualQaCsv(products: ValidatedProduct[]): string {
     fulfilled_by_amazon: p.fulfilledByAmazon,
     shipping_gate_result: p.shippingGateResult,
     shipping_review_required: p.shippingReviewRequired,
+    competition_quality_score: p.competitionQualityScore,
+    exact_match_saturation_score: p.exactMatchSaturationScore,
+    duplicate_listing_score: p.duplicateListingScore,
+    price_compression_score: p.priceCompressionScore,
+    seller_count: p.sellerCount,
+    exact_or_similar_match_count: p.exactOrSimilarMatchCount,
+    duplicate_ratio: p.duplicateRatio,
+    competition_gate_result: p.competitionGateResult,
+    competition_rejection_reason: p.competitionRejectionReason,
     sell_within_30_days_confidence: p.sellWithin30DaysConfidence,
     stagnation_risk_score: p.stagnationRiskScore,
     policy_risk_score: p.policyRiskScore,
@@ -567,6 +603,15 @@ function printSummary(args: {
   console.log(`  shipping review req  : ${stats.shippingReviewRequired}`);
   console.log(`  rejected too long    : ${stats.shippingRejectTooLong}`);
   console.log(`  rejected unclear     : ${stats.shippingRejectUnclear}`);
+  const cc = competitionStats(args.validated);
+  const cr = competitionRejectionsFromCodes(stats.rejectionCounts);
+  console.log(`  ----- competition gate -----`);
+  console.log(`  rejected by competition: ${cr.totalCompRejected}`);
+  console.log(`  avg competition quality (exports): ${cc.avgCompetitionQuality.toFixed(0)}`);
+  console.log(`  exports w/ high seller comp     : ${cc.highSellerCompetition}`);
+  console.log(`  exports w/ price compression    : ${cc.priceCompression}`);
+  console.log(`  exports w/ exact-match saturation: ${cc.exactMatchSaturation}`);
+  console.log(`  exports flagged generic commodity: ${cc.genericCommodity}`);
   console.log(`  end-to-end pass rate : ${passRate}%`);
   console.log(`  CSV path             : ${args.csvPath}`);
   console.log(`  manual QA CSV path   : ${args.qaPath}`);
@@ -765,7 +810,7 @@ interface SuccessReportArgs {
   csvPath: string;
   qaPath: string;
   stats: PipelineStats;
-  validated: { asin: string; amazonUrl: string; productTitle: string; brand?: string; amazonPrice: number; deliveryDays?: number; sellWithin30DaysConfidence: number; stagnationRiskScore: number; policyRiskScore: number; finalValidationScore: number }[];
+  validated: ValidatedProduct[];
 }
 
 function writeReport(args: SuccessReportArgs): string {
@@ -822,6 +867,28 @@ function writeReport(args: SuccessReportArgs): string {
   lines.push(`| requires manual shipping review | ${args.stats.shippingReviewRequired} |`);
   lines.push(`| rejected: DELIVERY_TOO_LONG | ${args.stats.shippingRejectTooLong} |`);
   lines.push(`| rejected: DELIVERY_UNCLEAR | ${args.stats.shippingRejectUnclear} |`);
+  lines.push('');
+  lines.push(`## Competition / saturation`);
+  lines.push('');
+  const compCounts = competitionStats(args.validated);
+  const compRejects = competitionRejectionsFromCodes(args.stats.rejectionCounts);
+  lines.push(`| Metric | Value |`);
+  lines.push(`| --- | ---:|`);
+  lines.push(`| products failed the competition gate (in rejection breakdown) | ${compRejects.totalCompRejected} |`);
+  lines.push(`| average competition_quality_score (exported) | ${compCounts.avgCompetitionQuality.toFixed(0)} |`);
+  lines.push(`| high seller competition (>= 60) in exports | ${compCounts.highSellerCompetition} |`);
+  lines.push(`| price compression (>= 50) in exports | ${compCounts.priceCompression} |`);
+  lines.push(`| exact-match saturation (>= 50) in exports | ${compCounts.exactMatchSaturation} |`);
+  lines.push(`| generic commodity titles in exports | ${compCounts.genericCommodity} |`);
+  lines.push(`| borderline competition gate in exports | ${compCounts.borderline} |`);
+  lines.push('');
+  if (Object.keys(compRejects.byCode).length > 0) {
+    lines.push(`Top competition rejection codes:`);
+    for (const [code, n] of Object.entries(compRejects.byCode).sort((a, b) => b[1] - a[1])) {
+      lines.push(`- \`${code}\`: ${n}`);
+    }
+    lines.push('');
+  }
   lines.push('');
   lines.push(`- **CSV export path**: \`${args.csvPath}\``);
   lines.push(`- **manual QA CSV path**: \`${args.qaPath}\``);
@@ -907,4 +974,81 @@ function writeFailureReport(args: FailureReportArgs): string {
   lines.push('');
   fs.writeFileSync(file, lines.join('\n'), 'utf8');
   return file;
+}
+
+// ---------------------------------------------------------------------------
+// Competition / saturation reporting helpers (V1.2)
+// ---------------------------------------------------------------------------
+
+function competitionStats(validated: ValidatedProduct[]): {
+  avgCompetitionQuality: number;
+  highSellerCompetition: number;
+  priceCompression: number;
+  exactMatchSaturation: number;
+  genericCommodity: number;
+  borderline: number;
+} {
+  if (validated.length === 0) {
+    return {
+      avgCompetitionQuality: 0,
+      highSellerCompetition: 0,
+      priceCompression: 0,
+      exactMatchSaturation: 0,
+      genericCommodity: 0,
+      borderline: 0,
+    };
+  }
+  let cqSum = 0;
+  let cqN = 0;
+  let highSC = 0;
+  let pc = 0;
+  let ems = 0;
+  let gc = 0;
+  let bl = 0;
+  for (const p of validated) {
+    if (typeof p.competitionQualityScore === 'number') {
+      cqSum += p.competitionQualityScore;
+      cqN++;
+    }
+    if ((p.sellerCompetitionScore ?? 0) >= 60) highSC++;
+    if ((p.priceCompressionScore ?? 0) >= 50) pc++;
+    if ((p.exactMatchSaturationScore ?? 0) >= 50) ems++;
+    if (p.isGenericCommodity) gc++;
+    if (p.competitionGateResult === 'borderline') bl++;
+  }
+  return {
+    avgCompetitionQuality: cqN === 0 ? 0 : cqSum / cqN,
+    highSellerCompetition: highSC,
+    priceCompression: pc,
+    exactMatchSaturation: ems,
+    genericCommodity: gc,
+    borderline: bl,
+  };
+}
+
+function competitionRejectionsFromCodes(rejectionCounts: Record<string, number>): {
+  totalCompRejected: number;
+  byCode: Record<string, number>;
+} {
+  const COMP_CODES = new Set([
+    RejectionReason.COMPETITION_GATE_FAILED,
+    RejectionReason.HIGH_SELLER_COMPETITION,
+    RejectionReason.EXACT_MATCH_SATURATION,
+    RejectionReason.TOO_MANY_SIMILAR_LISTINGS,
+    RejectionReason.HIGH_DUPLICATE_MARKET,
+    RejectionReason.PRICE_COMPRESSED_MARKET,
+    RejectionReason.LOW_MARGIN_COMPETITIVE_MARKET,
+    RejectionReason.SATURATED_GENERIC_PRODUCT,
+    RejectionReason.LOW_DIFFERENTIATION,
+    RejectionReason.GENERIC_COMMODITY_MARKET,
+  ]);
+  const byCode: Record<string, number> = {};
+  let total = 0;
+  for (const [code, n] of Object.entries(rejectionCounts)) {
+    if (COMP_CODES.has(code as never)) {
+      byCode[code] = n;
+      total += n;
+    }
+  }
+  return { totalCompRejected: total, byCode };
 }

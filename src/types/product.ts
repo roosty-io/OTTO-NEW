@@ -85,6 +85,20 @@ export interface ValidatedProduct {
   shippingGateResult?: 'pass' | 'prime_likely_pass' | 'reject';
   shippingReviewRequired?: boolean;
 
+  // Competition gate (V1.2)
+  competitionQualityScore?: number;
+  sellerCompetitionScore?: number;
+  exactMatchSaturationScore?: number;
+  duplicateListingScore?: number;
+  priceCompressionScore?: number;
+  sameSourceLikelihoodScore?: number;
+  isGenericCommodity?: boolean;
+  competitionGateResult?: 'healthy' | 'borderline' | 'saturated';
+  competitionRejectionReason?: string;
+  sellerCount?: number;
+  exactOrSimilarMatchCount?: number;
+  duplicateRatio?: number;
+
   // Cost
   totalCostEstimate: number;
   predictedMonthlyProfitPer100Listings: number;

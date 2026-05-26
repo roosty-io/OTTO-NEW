@@ -17,6 +17,10 @@ import { containsAny } from '@/utils/normalize';
 import { BRAND_ENTRIES } from '@/config/categories';
 import { THRESHOLDS } from '@/config/thresholds';
 import { RejectionReason } from '@/utils/rejectionReasons';
+import {
+  scoreCompetitionQuality,
+  type CompetitionGateResult,
+} from '@/utils/competitionQualityScoring';
 
 export interface BusinessFitInput {
   amazonPrice?: number;
@@ -28,9 +32,15 @@ export interface BusinessFitInput {
   // Demand-side inputs (already produced by EbayDemandScoringAgent).
   relevantComparableCount?: number;
   exactOrSimilarMatchCount?: number;
-  duplicateRatio?: number;
+  sellerCount?: number;
   sellerConcentrationScore?: number;
+  duplicateRatio?: number;
   competitionDensityScore?: number;
+  medianComparablePrice?: number;
+  avgComparablePrice?: number;
+  priceBandMin?: number;
+  priceBandMax?: number;
+  priceViabilityScore?: number;
   stagnationRiskScore?: number;
   sellWithin30DaysConfidence?: number;
   saturationScore?: number;
@@ -49,6 +59,16 @@ export interface BusinessFitOutput {
   manualQaPatternPenalty: number;
   similarListingPenalty: number;
   duplicateMarketPenalty: number;
+  // Competition gate (V1.2)
+  competitionQualityScore: number;
+  sellerCompetitionScore: number;
+  exactMatchSaturationScore: number;
+  duplicateListingScore: number;
+  priceCompressionScore: number;
+  sameSourceLikelihoodScore: number;
+  isGenericCommodity: boolean;
+  competitionGateResult: CompetitionGateResult;
+  competitionRejectionReason?: string;
   businessFitPassed: boolean;
   businessFitRejectionReason?: string;
   reasonCodes: string[];
@@ -94,21 +114,34 @@ export function scoreBusinessFit(input: BusinessFitInput): BusinessFitOutput {
   const similarListingPenalty = differentiation.similarListingPenalty;
   const duplicateMarketPenalty = differentiation.duplicateMarketPenalty;
 
+  // V1.2 dedicated competition gate.  Looks at sellerCount, exact-match
+  // saturation, duplicate ratio, and price compression as a coordinated
+  // unit so a single bad axis (or a combination) can reject a product
+  // even when demand is strong.
+  const competition = scoreCompetitionQuality(input);
+  for (const c of competition.reasonCodes) reasonCodes.push(c);
+  for (const n of competition.notes) notes.push(`competition: ${n}`);
+
   // Final blend: weighted, then drag down for high penalties.
   const blended = weightedAverage([
     { value: priceQualityScore, weight: 4 },
-    { value: saturationQualityScore, weight: 2.5 },
+    { value: saturationQualityScore, weight: 2 },
     { value: differentiationScore, weight: 1.5 },
+    { value: competition.competitionQualityScore, weight: 2 },
     { value: 100 - bulkinessRiskScore, weight: 1.5 },
     { value: 100 - brandCautionScore, weight: 1 },
     { value: 100 - manualQaPatternPenalty, weight: 0.5 },
   ]);
   const businessFitScore = hardReject !== undefined ? 0 : clamp(blended);
 
-  // Pass rules.
+  // Pass rules.  Competition gate fires before the business-fit composite
+  // so a healthy demand score can't shield a saturated market.
   let businessFitRejectionReason: string | undefined;
   if (hardReject) businessFitRejectionReason = hardReject;
-  else if (bulkinessRiskScore > THRESHOLDS.MAX_BULKINESS_RISK_SCORE) {
+  else if (competition.competitionGateResult === 'saturated') {
+    businessFitRejectionReason = competition.competitionRejectionReason
+      ?? RejectionReason.COMPETITION_GATE_FAILED;
+  } else if (bulkinessRiskScore > THRESHOLDS.MAX_BULKINESS_RISK_SCORE) {
     businessFitRejectionReason = RejectionReason.BULKY_HIGH_TICKET_CAUTION;
   } else if ((100 - saturationQualityScore) > THRESHOLDS.MAX_SATURATION_QUALITY_RISK) {
     businessFitRejectionReason = RejectionReason.TOO_MANY_SIMILAR_LISTINGS;
@@ -128,6 +161,15 @@ export function scoreBusinessFit(input: BusinessFitInput): BusinessFitOutput {
     manualQaPatternPenalty,
     similarListingPenalty,
     duplicateMarketPenalty,
+    competitionQualityScore: competition.competitionQualityScore,
+    sellerCompetitionScore: competition.sellerCompetitionScore,
+    exactMatchSaturationScore: competition.exactMatchSaturationScore,
+    duplicateListingScore: competition.duplicateListingScore,
+    priceCompressionScore: competition.priceCompressionScore,
+    sameSourceLikelihoodScore: competition.sameSourceLikelihoodScore,
+    isGenericCommodity: competition.isGenericCommodity,
+    competitionGateResult: competition.competitionGateResult,
+    competitionRejectionReason: competition.competitionRejectionReason,
     businessFitPassed,
     businessFitRejectionReason,
     reasonCodes,
