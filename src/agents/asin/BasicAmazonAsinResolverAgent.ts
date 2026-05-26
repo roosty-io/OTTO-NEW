@@ -53,6 +53,15 @@ export interface AsinResolverData {
   rejectionReason?: string;
   /** Legacy: kept so older callers reading `.confidence` still get a number. */
   confidence: number;
+  // V1.3 reliability diagnostics
+  amazonQueryAttemptsCount: number;
+  malformedPageCount: number;
+  captchaBlockCount: number;
+  timeoutCount: number;
+  successfulQuery?: string;
+  failedQueries: { query: string; strategy: string; pageQuality?: string; errorCode?: string; attempts: number; retriesUsed: number }[];
+  resolverRetryCount: number;
+  finalResolverErrorCode?: string;
 }
 
 export class BasicAmazonAsinResolverAgent {
@@ -74,20 +83,65 @@ export class BasicAmazonAsinResolverAgent {
     const attempts: AsinResolverAttempt[] = [];
     let searchHadError = false;
     let lastSearchError: string | null = null;
+    // V1.3 diagnostics
+    let amazonQueryAttemptsCount = 0;
+    let malformedPageCount = 0;
+    let captchaBlockCount = 0;
+    let timeoutCount = 0;
+    let resolverRetryCount = 0;
+    let successfulQuery: string | undefined;
+    let finalResolverErrorCode: string | undefined;
+    const failedQueries: AsinResolverData['failedQueries'] = [];
 
     for (const strategy of queries) {
       const result = await amazon.search(strategy.query, env.amazon.maxResultsPerQuery);
+      amazonQueryAttemptsCount += result.attempts ?? 1;
+      resolverRetryCount += result.retriesUsed ?? 0;
+      if (result.pageQuality === 'MALFORMED_PAGE' || result.pageQuality === 'PARTIAL_RENDER') {
+        malformedPageCount++;
+      }
+      if (result.pageQuality === 'CAPTCHA_OR_BLOCK' || result.pageQuality === 'SOFT_BLOCK') {
+        captchaBlockCount++;
+      }
+      if (result.pageQuality === 'TIMEOUT' || result.pageQuality === 'NETWORK_FAILURE') {
+        timeoutCount++;
+      }
       if (result.error) {
         searchHadError = true;
         lastSearchError = `${result.error.code}: ${result.error.message}`;
-        this.log.warn('Amazon search error', {
+        finalResolverErrorCode = result.error.code;
+        failedQueries.push({
+          query: strategy.query,
+          strategy: strategy.label,
+          pageQuality: result.pageQuality,
+          errorCode: result.error.code,
+          attempts: result.attempts ?? 1,
+          retriesUsed: result.retriesUsed ?? 0,
+        });
+        this.log.warn('Amazon search error after retries', {
           ottoProductId: candidate.ottoProductId,
           query: strategy.query,
           code: result.error.code,
+          pageQuality: result.pageQuality,
+          attempts: result.attempts,
+          retriesUsed: result.retriesUsed,
         });
         // Browser-launch failures will repeat - bail out early.
         if (result.error.code === 'BROWSER_LAUNCH_FAILED') break;
+        // Otherwise move on to the next generated query (fallback chain).
         continue;
+      }
+      // Page rendered cleanly even if zero hits.
+      if (result.hits.length > 0) successfulQuery = strategy.query;
+      else {
+        failedQueries.push({
+          query: strategy.query,
+          strategy: strategy.label,
+          pageQuality: result.pageQuality,
+          errorCode: 'NO_HITS',
+          attempts: result.attempts ?? 1,
+          retriesUsed: result.retriesUsed ?? 0,
+        });
       }
       for (const hit of result.hits) {
         const scored = scoreAmazonHit(hit, {
@@ -116,7 +170,16 @@ export class BasicAmazonAsinResolverAgent {
       }
     }
 
-    await this.persistAttempts(candidate.ottoProductId, rawCandidateId, attempts);
+    await this.persistAttempts(candidate.ottoProductId, rawCandidateId, attempts, {
+      amazonQueryAttemptsCount,
+      malformedPageCount,
+      captchaBlockCount,
+      timeoutCount,
+      successfulQuery,
+      failedQueries,
+      resolverRetryCount,
+      finalResolverErrorCode,
+    });
 
     const accepted = attempts.filter((a) => a.accepted)
       .sort((a, b) => b.scored.finalProductMatchConfidence - a.scored.finalProductMatchConfidence);
@@ -140,6 +203,14 @@ export class BasicAmazonAsinResolverAgent {
         resolverMethod: RESOLVER_METHOD,
         attempts: attempts.length,
         confidence: best.scored.finalProductMatchConfidence,
+        amazonQueryAttemptsCount,
+        malformedPageCount,
+        captchaBlockCount,
+        timeoutCount,
+        successfulQuery,
+        failedQueries,
+        resolverRetryCount,
+        finalResolverErrorCode,
       };
       const result = makeResult<AsinResolverData>(
         this.name,
@@ -173,6 +244,16 @@ export class BasicAmazonAsinResolverAgent {
       rejectionReason,
       lastSearchError ?? `${attempts.length} hits, none above ${MIN_ACCEPT_CONFIDENCE}% confidence`,
       attempts.length,
+      {
+        amazonQueryAttemptsCount,
+        malformedPageCount,
+        captchaBlockCount,
+        timeoutCount,
+        successfulQuery,
+        failedQueries,
+        resolverRetryCount,
+        finalResolverErrorCode,
+      },
     );
   }
 
@@ -190,6 +271,13 @@ export class BasicAmazonAsinResolverAgent {
       attempts: 0,
       rejectionReason: reasonCode,
       confidence: 0,
+      amazonQueryAttemptsCount: 0,
+      malformedPageCount: 0,
+      captchaBlockCount: 0,
+      timeoutCount: 0,
+      failedQueries: [],
+      resolverRetryCount: 0,
+      finalResolverErrorCode: reasonCode,
     };
     const result = makeResult<AsinResolverData>(this.name, candidate.ottoProductId, 'fail', 0, [reasonCode], data);
     await persistAgentResult(result, runId);
@@ -202,11 +290,21 @@ export class BasicAmazonAsinResolverAgent {
     reasonCode: string,
     detail: string,
     attempts: number,
+    diagnostics?: Partial<Pick<AsinResolverData,
+      | 'amazonQueryAttemptsCount'
+      | 'malformedPageCount'
+      | 'captchaBlockCount'
+      | 'timeoutCount'
+      | 'successfulQuery'
+      | 'failedQueries'
+      | 'resolverRetryCount'
+      | 'finalResolverErrorCode'>>,
   ): Promise<AgentResult<AsinResolverData>> {
     await recordRejection(candidate.ottoProductId, 'asin_resolution', reasonCode, {
       detail,
       productTitleRaw: candidate.productTitleRaw,
       attempts,
+      ...(diagnostics ?? {}),
     });
     const data: AsinResolverData = {
       finalProductMatchConfidence: 0,
@@ -214,6 +312,14 @@ export class BasicAmazonAsinResolverAgent {
       attempts,
       rejectionReason: reasonCode,
       confidence: 0,
+      amazonQueryAttemptsCount: diagnostics?.amazonQueryAttemptsCount ?? 0,
+      malformedPageCount: diagnostics?.malformedPageCount ?? 0,
+      captchaBlockCount: diagnostics?.captchaBlockCount ?? 0,
+      timeoutCount: diagnostics?.timeoutCount ?? 0,
+      successfulQuery: diagnostics?.successfulQuery,
+      failedQueries: diagnostics?.failedQueries ?? [],
+      resolverRetryCount: diagnostics?.resolverRetryCount ?? 0,
+      finalResolverErrorCode: diagnostics?.finalResolverErrorCode ?? reasonCode,
     };
     const result = makeResult<AsinResolverData>(
       this.name,
@@ -231,6 +337,16 @@ export class BasicAmazonAsinResolverAgent {
     ottoProductId: string,
     rawCandidateId: string | undefined,
     attempts: AsinResolverAttempt[],
+    diagnostics?: {
+      amazonQueryAttemptsCount: number;
+      malformedPageCount: number;
+      captchaBlockCount: number;
+      timeoutCount: number;
+      successfulQuery?: string;
+      failedQueries: AsinResolverData['failedQueries'];
+      resolverRetryCount: number;
+      finalResolverErrorCode?: string;
+    },
   ): Promise<void> {
     if (attempts.length === 0) return;
     const supabase = getSupabase();
@@ -255,6 +371,14 @@ export class BasicAmazonAsinResolverAgent {
       final_product_match_confidence: a.scored.finalProductMatchConfidence,
       rejection_reason: a.accepted ? null : a.rejectionReason,
       accepted: a.accepted,
+      amazon_query_attempts_count: diagnostics?.amazonQueryAttemptsCount ?? null,
+      malformed_page_count: diagnostics?.malformedPageCount ?? null,
+      captcha_block_count: diagnostics?.captchaBlockCount ?? null,
+      timeout_count: diagnostics?.timeoutCount ?? null,
+      successful_query: diagnostics?.successfulQuery ?? null,
+      failed_queries_json: diagnostics?.failedQueries ?? [],
+      resolver_retry_count: diagnostics?.resolverRetryCount ?? null,
+      final_resolver_error_code: diagnostics?.finalResolverErrorCode ?? null,
       raw_payload: {
         queryStrategy: a.queryStrategy,
         query: a.query,

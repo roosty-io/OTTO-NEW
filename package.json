@@ -20,6 +20,8 @@
     "test:compliance": "ts-node -T -r tsconfig-paths/register src/scripts/test-compliance.ts",
     "test:shipping-gate": "ts-node -T -r tsconfig-paths/register src/scripts/test-shipping-gate.ts",
     "test:competition-quality": "ts-node -T -r tsconfig-paths/register src/scripts/test-competition-quality.ts",
+    "test:resolver-retry": "ts-node -T -r tsconfig-paths/register src/scripts/test-resolver-retry.ts",
+    "test:amazon-resolver-reliability": "ts-node -T -r tsconfig-paths/register src/scripts/test-amazon-resolver-reliability.ts",
     "export:csv": "ts-node -T -r tsconfig-paths/register src/scripts/export-latest-csv.ts",
     "seed:rules": "ts-node -T -r tsconfig-paths/register src/scripts/seed-rules.ts",
     "db:apply": "ts-node -T -r tsconfig-paths/register src/scripts/apply-schema.ts"

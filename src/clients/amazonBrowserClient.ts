@@ -42,9 +42,24 @@ export type AmazonErrorCode =
   | 'MALFORMED_PAGE'
   | 'UNKNOWN';
 
+export type AmazonPageQuality =
+  | 'SEARCH_RESULTS_OK'
+  | 'PRODUCT_PAGE_OK'
+  | 'EMPTY_RESULTS'
+  | 'SOFT_BLOCK'
+  | 'CAPTCHA_OR_BLOCK'
+  | 'PARTIAL_RENDER'
+  | 'MALFORMED_PAGE'
+  | 'NETWORK_FAILURE'
+  | 'TIMEOUT';
+
 export interface AmazonSearchResult {
   hits: AmazonSearchHit[];
   error?: { code: AmazonErrorCode; message: string };
+  /** V1.3 reliability diagnostics. */
+  pageQuality?: AmazonPageQuality;
+  attempts?: number;
+  retriesUsed?: number;
 }
 
 export interface AmazonProductSnapshot {
@@ -332,58 +347,150 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
   async search(query: string, limit?: number): Promise<AmazonSearchResult> {
     const cleaned = (query ?? '').trim();
     if (!cleaned) {
-      return { hits: [], error: { code: 'MALFORMED_PAGE', message: 'empty query' } };
+      return {
+        hits: [],
+        error: { code: 'MALFORMED_PAGE', message: 'empty query' },
+        pageQuality: 'MALFORMED_PAGE',
+        attempts: 0,
+        retriesUsed: 0,
+      };
     }
     const browser = await this.ensureBrowser();
     if (!browser) {
       return {
         hits: [],
         error: { code: 'BROWSER_LAUNCH_FAILED', message: this.launchError ?? 'unknown launch failure' },
+        pageQuality: 'NETWORK_FAILURE',
+        attempts: 0,
+        retriesUsed: 0,
       };
     }
 
     const cap = Math.min(limit ?? env.amazon.maxResultsPerQuery, 30);
     const url = `https://www.amazon.com/s?k=${encodeURIComponent(cleaned)}`;
-    const timeoutMs = env.amazon.searchTimeoutMs;
+    const maxRetries = Math.max(0, env.amazon.malformedPageMaxRetries);
 
+    let attempts = 0;
+    let retriesUsed = 0;
+    let lastQuality: AmazonPageQuality = 'MALFORMED_PAGE';
+    let lastError: { code: AmazonErrorCode; message: string } | undefined;
+
+    // attempts = 1 + retries; loop while we have retries left.
+    for (let i = 0; i <= maxRetries; i++) {
+      attempts++;
+      // Rotate UA / viewport between retries so Amazon doesn't return the
+      // same partial render for the same fingerprint.
+      const profile = browserProfile(i);
+      const once = await this.searchOnce(browser, url, cap, profile);
+      lastQuality = once.pageQuality;
+      lastError = once.error;
+
+      if (once.pageQuality === 'SEARCH_RESULTS_OK') {
+        return {
+          hits: once.hits,
+          pageQuality: 'SEARCH_RESULTS_OK',
+          attempts,
+          retriesUsed,
+        };
+      }
+      // EMPTY_RESULTS is terminal - Amazon legitimately has no products.
+      if (once.pageQuality === 'EMPTY_RESULTS') {
+        return {
+          hits: [],
+          pageQuality: 'EMPTY_RESULTS',
+          attempts,
+          retriesUsed,
+        };
+      }
+      // CAPTCHA / SOFT_BLOCK: retrying just burns IP reputation. Allow at
+      // most one retry total when blocked.
+      if (once.pageQuality === 'CAPTCHA_OR_BLOCK' || once.pageQuality === 'SOFT_BLOCK') {
+        if (retriesUsed >= 1) break;
+        retriesUsed++;
+        await sleep(backoffDelay(retriesUsed));
+        continue;
+      }
+      // MALFORMED_PAGE / PARTIAL_RENDER / TIMEOUT / NETWORK_FAILURE: retry
+      // up to maxRetries with exponential backoff and jitter.
+      if (i < maxRetries) {
+        retriesUsed++;
+        this.log.warn('Amazon search retry', {
+          attempt: attempts,
+          quality: once.pageQuality,
+          message: once.error?.message,
+        });
+        await sleep(backoffDelay(retriesUsed));
+        continue;
+      }
+      break;
+    }
+    return {
+      hits: [],
+      error: lastError ?? { code: 'MALFORMED_PAGE', message: `gave up after ${attempts} attempts` },
+      pageQuality: lastQuality,
+      attempts,
+      retriesUsed,
+    };
+  }
+
+  private async searchOnce(
+    browser: PwBrowser,
+    url: string,
+    cap: number,
+    profile: BrowserProfile,
+  ): Promise<{ hits: AmazonSearchHit[]; pageQuality: AmazonPageQuality; error?: { code: AmazonErrorCode; message: string } }> {
+    const timeoutMs = env.amazon.searchTimeoutMs;
     let context: PwContext | null = null;
     let page: PwPage | null = null;
     try {
       context = await browser.newContext({
-        userAgent:
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-          'Chrome/124.0.0.0 Safari/537.36',
+        userAgent: profile.userAgent,
         locale: 'en-US',
-        viewport: { width: 1366, height: 900 },
+        viewport: profile.viewport,
         ignoreHTTPSErrors: env.amazon.ignoreHttpsErrors,
       });
       page = await context.newPage();
-
       try {
         await page.goto(url, { timeout: timeoutMs, waitUntil: 'domcontentloaded' });
       } catch (err) {
         const msg = (err as Error).message;
-        const code: AmazonErrorCode = /timeout/i.test(msg) ? 'TIMEOUT' : 'NAVIGATION_FAILED';
-        return { hits: [], error: { code, message: msg } };
-      }
-
-      const html = await page.content();
-      if (looksBlocked(html, page.url())) {
+        const isTimeout = /timeout/i.test(msg);
         return {
           hits: [],
-          error: { code: 'BLOCKED_OR_CAPTCHA', message: 'Amazon served a captcha / robot check page' },
+          pageQuality: isTimeout ? 'TIMEOUT' : 'NETWORK_FAILURE',
+          error: { code: isTimeout ? 'TIMEOUT' : 'NAVIGATION_FAILED', message: msg },
         };
       }
+      // Wait for results / no-results / block markers to race; bounded so
+      // a partial render still classifies as MALFORMED_PAGE quickly.
+      await waitForSearchReady(page, Math.min(timeoutMs, 8000));
+      // Trigger lazy rendering with a small scroll.
+      await safeScroll(page);
 
+      const html = await page.content();
+      const currentUrl = page.url();
       const rawHits = await this.extractHits(page, cap);
-      if (rawHits.length === 0) {
-        // Page rendered but no organic ASIN tiles - probably a layout change or zero results.
-        return { hits: [], error: { code: 'MALFORMED_PAGE', message: 'no ASIN result tiles found' } };
+      const bodyLen = await safeBodyTextLength(page);
+      const quality = classifyAmazonSearchPage(html, currentUrl, rawHits.length, bodyLen);
+
+      if (quality === 'SEARCH_RESULTS_OK') return { hits: rawHits, pageQuality: quality };
+      if (quality === 'EMPTY_RESULTS') return { hits: [], pageQuality: quality };
+      if (quality === 'CAPTCHA_OR_BLOCK' || quality === 'SOFT_BLOCK') {
+        return {
+          hits: [],
+          pageQuality: quality,
+          error: { code: 'BLOCKED_OR_CAPTCHA', message: `Amazon ${quality.toLowerCase()} page` },
+        };
       }
-      return { hits: rawHits };
+      return {
+        hits: [],
+        pageQuality: quality,
+        error: { code: 'MALFORMED_PAGE', message: `page quality: ${quality} (body ${bodyLen} bytes, ${rawHits.length} tiles)` },
+      };
     } catch (err) {
       return {
         hits: [],
+        pageQuality: 'MALFORMED_PAGE',
         error: { code: 'UNKNOWN', message: `search failed: ${(err as Error).message}` },
       };
     } finally {
@@ -409,16 +516,62 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
     try {
       // NB: this function executes in the browser, so DOM globals are real
       // even though TS doesn't have DOM types loaded here.
-      raws = await page.$$eval('div.s-result-item[data-asin]', (els) => {
+      // Broaden the tile selector so any ASIN-bearing result card is picked
+      // up even when Amazon swaps the outer container class.
+      const tileSelector =
+        'div.s-result-item[data-asin], [data-component-type="s-search-result"][data-asin], [data-asin][cel_widget_id*="MAIN-SEARCH_RESULTS"]';
+      raws = await page.$$eval(tileSelector, (els) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const list = els as any[];
         const out: RawTile[] = [];
+        const ASIN_RE = /\/(?:dp|gp\/product|gp\/aw\/d)\/([A-Z0-9]{10})(?:\b|\/|$)/;
         for (const el of list) {
-          const asin = el.getAttribute('data-asin');
-          if (!asin || asin.length < 5) continue;
-          const titleEl = el.querySelector('h2 a span, [data-cy="title-recipe"] span, h2 span');
-          const linkEl = el.querySelector('h2 a, a.a-link-normal.s-no-outline, a.a-link-normal[href*="/dp/"]');
-          const priceEl = el.querySelector('.a-price .a-offscreen');
+          // ASIN: prefer data-asin, fall back to /dp/ or /gp/product/ href.
+          let asin: string | null = el.getAttribute('data-asin');
+          if (!asin || asin.length < 8) {
+            const anyLink = el.querySelector('a[href*="/dp/"], a[href*="/gp/product/"]');
+            const href = anyLink ? anyLink.getAttribute('href') : null;
+            const m = href ? href.match(ASIN_RE) : null;
+            if (m) asin = m[1];
+          }
+          if (!asin || asin.length < 8) continue;
+          // Title: try multiple selectors, plus aria-label and image alt as
+          // low-confidence fallbacks.
+          const titleEl =
+            el.querySelector('h2 a span') ||
+            el.querySelector('[data-cy="title-recipe"] span') ||
+            el.querySelector('h2 span') ||
+            el.querySelector('h2 a');
+          const titleAria = el.querySelector('h2 a[aria-label]');
+          const imgAlt = el.querySelector('img.s-image[alt]');
+          const titleText =
+            (titleEl && titleEl.textContent ? titleEl.textContent.trim() : '') ||
+            (titleAria ? titleAria.getAttribute('aria-label') ?? '' : '') ||
+            (imgAlt ? imgAlt.getAttribute('alt') ?? '' : '');
+          const linkEl =
+            el.querySelector('h2 a[href*="/dp/"]') ||
+            el.querySelector('a.a-link-normal[href*="/dp/"]') ||
+            el.querySelector('a[href*="/dp/"]') ||
+            el.querySelector('a[href*="/gp/product/"]') ||
+            el.querySelector('h2 a');
+          // Price: standard accessible offscreen first, then whole/fraction
+          // composite, then aria-label fallback.
+          const priceOff = el.querySelector('.a-price .a-offscreen');
+          let priceTextLocal: string | null = null;
+          if (priceOff && priceOff.textContent) priceTextLocal = priceOff.textContent.trim();
+          if (!priceTextLocal) {
+            const whole = el.querySelector('.a-price .a-price-whole');
+            const frac = el.querySelector('.a-price .a-price-fraction');
+            if (whole && whole.textContent) {
+              const w = whole.textContent.replace(/[^0-9.]/g, '');
+              const f = frac && frac.textContent ? frac.textContent.replace(/[^0-9]/g, '') : '';
+              priceTextLocal = f ? `$${w}.${f}` : `$${w}`;
+            }
+          }
+          if (!priceTextLocal) {
+            const priceAria = el.querySelector('[aria-label][data-a-color]');
+            if (priceAria) priceTextLocal = priceAria.getAttribute('aria-label');
+          }
           const ratingEl = el.querySelector('.a-icon-star-small .a-icon-alt, .a-icon-star .a-icon-alt');
           const reviewEl = el.querySelector('[data-csa-c-content-id="ratings-count"] span, .a-size-base.s-underline-text');
           const imgEl = el.querySelector('img.s-image');
@@ -428,8 +581,8 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
           out.push({
             asin,
             url: linkEl ? linkEl.getAttribute('href') : null,
-            title: titleEl && titleEl.textContent ? titleEl.textContent.trim() : null,
-            priceText: priceEl && priceEl.textContent ? priceEl.textContent.trim() : null,
+            title: titleText || null,
+            priceText: priceTextLocal,
             ratingText: ratingEl && ratingEl.textContent ? ratingEl.textContent.trim() : null,
             reviewCountText: reviewEl && reviewEl.textContent ? reviewEl.textContent.trim() : null,
             imageUrl: imgEl ? imgEl.getAttribute('src') : null,
@@ -834,6 +987,125 @@ function looksBlocked(html: string, currentUrl: string): boolean {
   return false;
 }
 
+// Page-quality classifier.  Separates a healthy results page from soft
+// blocks, captchas, and genuinely malformed responses so the retry loop
+// can decide whether to retry, give up, or move to the next query.
+export function classifyAmazonSearchPage(
+  html: string,
+  currentUrl: string,
+  tileCount: number,
+  bodyTextLength: number,
+): AmazonPageQuality {
+  if (!html) return 'MALFORMED_PAGE';
+  if (/\/errors\/validateCaptcha/i.test(currentUrl)) return 'CAPTCHA_OR_BLOCK';
+  if (/Enter the characters you see below/i.test(html)) return 'CAPTCHA_OR_BLOCK';
+  if (/Type the characters you see in this image/i.test(html)) return 'CAPTCHA_OR_BLOCK';
+  if (/api-services-support@amazon\.com/i.test(html) && /robot/i.test(html)) return 'CAPTCHA_OR_BLOCK';
+  if (/Robot Check/i.test(html)) return 'SOFT_BLOCK';
+  if (/automated access to Amazon data/i.test(html)) return 'SOFT_BLOCK';
+  if (/Sorry, we just need to make sure you'?re not a robot/i.test(html)) return 'SOFT_BLOCK';
+  if (tileCount > 0) return 'SEARCH_RESULTS_OK';
+  if (/no results for/i.test(html) || /did not match any products/i.test(html)) return 'EMPTY_RESULTS';
+  if (bodyTextLength < 600) return 'PARTIAL_RENDER';
+  return 'MALFORMED_PAGE';
+}
+
+// Race-wait for any of: search result cards, no-results message, captcha.
+async function waitForSearchReady(page: PwPage, timeoutMs: number): Promise<void> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const p = page as any;
+    if (typeof p.waitForSelector === 'function') {
+      // Best-effort race; whichever resolves first wins.
+      await Promise.race([
+        p.waitForSelector('[data-component-type="s-search-result"]', { timeout: timeoutMs, state: 'attached' }),
+        p.waitForSelector('div.s-result-item[data-asin]', { timeout: timeoutMs, state: 'attached' }),
+        p.waitForSelector('.s-no-outline.s-noresults-message, [data-cel-widget="search-results"] .s-no-outline', { timeout: timeoutMs, state: 'attached' }),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+      ]).catch(() => undefined);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+// Trigger lazy-loaded result cards by scrolling halfway down and back.
+async function safeScroll(page: PwPage): Promise<void> {
+  try {
+    await page.$$eval('body', (els) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = (els as any[])[0] as any;
+      if (w && w.ownerDocument && w.ownerDocument.defaultView) {
+        w.ownerDocument.defaultView.scrollTo(0, 800);
+      }
+      return 0;
+    });
+    await new Promise((r) => setTimeout(r, 600));
+  } catch {
+    /* ignore */
+  }
+}
+
+async function safeBodyTextLength(page: PwPage): Promise<number> {
+  try {
+    return await page.$$eval('body', (els) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const e = (els as any[])[0] as any;
+      const t = e && e.textContent ? String(e.textContent) : '';
+      return t.length;
+    });
+  } catch {
+    return 0;
+  }
+}
+
+interface BrowserProfile {
+  userAgent: string;
+  viewport: { width: number; height: number };
+}
+
+const PROFILES: BrowserProfile[] = [
+  {
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    viewport: { width: 1366, height: 900 },
+  },
+  {
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    viewport: { width: 1440, height: 900 },
+  },
+  {
+    userAgent:
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    viewport: { width: 1280, height: 800 },
+  },
+  {
+    userAgent:
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+    viewport: { width: 1512, height: 982 },
+  },
+];
+
+function browserProfile(attemptIndex: number): BrowserProfile {
+  return PROFILES[attemptIndex % PROFILES.length];
+}
+
+function backoffDelay(retryNumber: number): number {
+  // Exponential backoff with optional jitter, capped at AMAZON_RETRY_MAX_DELAY_MS.
+  const base = env.amazon.retryBaseDelayMs;
+  const cap = env.amazon.retryMaxDelayMs;
+  const raw = Math.min(cap, base * Math.pow(2, Math.max(0, retryNumber - 1)));
+  if (!env.amazon.retryJitter) return Math.floor(raw);
+  // ±20% jitter.
+  const jitter = raw * (0.8 + Math.random() * 0.4);
+  return Math.floor(Math.min(cap, jitter));
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 function absoluteAmazonUrl(href: string | null, asin: string): string {
   // Always prefer the canonical /dp/<ASIN> form. Amazon search tiles use
   // tracking redirects (/sspa/click, /gp/slredirect, /gp/redirect) for
@@ -974,4 +1246,9 @@ export function getAmazonBrowserClient(): AmazonBrowserClient {
 /** Test-only: reset the cached singleton (useful for scripts that need a fresh browser). */
 export function _resetAmazonBrowserClient(): void {
   _client = null;
+}
+
+/** Test-only: inject a fake client so unit tests can script retry behavior. */
+export function _setAmazonBrowserClient(client: AmazonBrowserClient | null): void {
+  _client = client;
 }

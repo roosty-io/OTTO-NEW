@@ -112,6 +112,14 @@ create table if not exists asin_candidates (
   final_product_match_confidence numeric,
   rejection_reason text,
   accepted boolean not null default false,
+  amazon_query_attempts_count int,
+  malformed_page_count int,
+  captcha_block_count int,
+  timeout_count int,
+  successful_query text,
+  failed_queries_json jsonb default '[]'::jsonb,
+  resolver_retry_count int,
+  final_resolver_error_code text,
   raw_payload jsonb default '{}'::jsonb,
   created_at timestamptz not null default now()
 );

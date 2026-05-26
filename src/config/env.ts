@@ -50,6 +50,11 @@ export const env = {
     debug: bool('AMAZON_DEBUG', false),
     /** Dev/test escape hatch for environments behind a TLS-intercepting proxy. */
     ignoreHttpsErrors: bool('AMAZON_IGNORE_HTTPS_ERRORS', false),
+    /** Resolver reliability tuning (V1.3). */
+    malformedPageMaxRetries: num('AMAZON_MALFORMED_PAGE_MAX_RETRIES', 3),
+    retryBaseDelayMs: num('AMAZON_RETRY_BASE_DELAY_MS', 1500),
+    retryMaxDelayMs: num('AMAZON_RETRY_MAX_DELAY_MS', 12000),
+    retryJitter: bool('AMAZON_RETRY_JITTER', true),
   },
   zik: {
     username: str('ZIK_USERNAME'),

@@ -81,6 +81,15 @@ interface PipelineStats {
   shippingReviewRequired: number;
   shippingRejectTooLong: number;
   shippingRejectUnclear: number;
+  // Amazon resolver reliability (V1.3)
+  amazonSearchAttemptsTotal: number;
+  amazonSearchPagesOk: number;
+  amazonMalformedPagePagesTotal: number;
+  amazonMalformedRecoveredAfterRetry: number;
+  amazonCaptchaBlockPages: number;
+  amazonTimeoutPages: number;
+  amazonEmptyResultPages: number;
+  amazonResolverFinalFailures: number;
 }
 
 interface TopProductRow {
@@ -156,6 +165,14 @@ async function main(): Promise<void> {
     shippingReviewRequired: 0,
     shippingRejectTooLong: 0,
     shippingRejectUnclear: 0,
+    amazonSearchAttemptsTotal: 0,
+    amazonSearchPagesOk: 0,
+    amazonMalformedPagePagesTotal: 0,
+    amazonMalformedRecoveredAfterRetry: 0,
+    amazonCaptchaBlockPages: 0,
+    amazonTimeoutPages: 0,
+    amazonEmptyResultPages: 0,
+    amazonResolverFinalFailures: 0,
   };
 
   const bump = (code: string | undefined) => {
@@ -195,6 +212,23 @@ async function main(): Promise<void> {
   for (const candidate of discovery.candidates) {
     // 2. ASIN
     const asinResult = await asinAgent.run({ candidate, runId });
+    // V1.3 resolver reliability accounting.
+    const arr = asinResult.data;
+    stats.amazonSearchAttemptsTotal += arr.amazonQueryAttemptsCount ?? 0;
+    stats.amazonMalformedPagePagesTotal += arr.malformedPageCount ?? 0;
+    stats.amazonCaptchaBlockPages += arr.captchaBlockCount ?? 0;
+    stats.amazonTimeoutPages += arr.timeoutCount ?? 0;
+    if (arr.successfulQuery) {
+      stats.amazonSearchPagesOk++;
+      if ((arr.malformedPageCount ?? 0) > 0 || (arr.timeoutCount ?? 0) > 0) {
+        stats.amazonMalformedRecoveredAfterRetry++;
+      }
+    } else if (asinResult.status !== 'pass') {
+      stats.amazonResolverFinalFailures++;
+    }
+    for (const fq of arr.failedQueries ?? []) {
+      if (fq.pageQuality === 'EMPTY_RESULTS') stats.amazonEmptyResultPages++;
+    }
     if (asinResult.status !== 'pass' || !asinResult.data.asin) {
       stats.asinFailed++;
       bump(asinResult.data.rejectionReason ?? asinResult.reasons[0]);
@@ -603,6 +637,20 @@ function printSummary(args: {
   console.log(`  shipping review req  : ${stats.shippingReviewRequired}`);
   console.log(`  rejected too long    : ${stats.shippingRejectTooLong}`);
   console.log(`  rejected unclear     : ${stats.shippingRejectUnclear}`);
+  const resolverSuccessRate =
+    stats.amazonSearchAttemptsTotal > 0
+      ? (stats.amazonSearchPagesOk / stats.amazonSearchAttemptsTotal) * 100
+      : 0;
+  console.log(`  ----- amazon resolver reliability -----`);
+  console.log(`  search attempts total   : ${stats.amazonSearchAttemptsTotal}`);
+  console.log(`  search pages OK         : ${stats.amazonSearchPagesOk}`);
+  console.log(`  malformed page count    : ${stats.amazonMalformedPagePagesTotal}`);
+  console.log(`  malformed recovered     : ${stats.amazonMalformedRecoveredAfterRetry}`);
+  console.log(`  captcha/block pages     : ${stats.amazonCaptchaBlockPages}`);
+  console.log(`  timeout pages           : ${stats.amazonTimeoutPages}`);
+  console.log(`  empty results pages     : ${stats.amazonEmptyResultPages}`);
+  console.log(`  final resolver failures : ${stats.amazonResolverFinalFailures}`);
+  console.log(`  resolver success rate   : ${resolverSuccessRate.toFixed(1)}%`);
   const cc = competitionStats(args.validated);
   const cr = competitionRejectionsFromCodes(stats.rejectionCounts);
   console.log(`  ----- competition gate -----`);
@@ -867,6 +915,24 @@ function writeReport(args: SuccessReportArgs): string {
   lines.push(`| requires manual shipping review | ${args.stats.shippingReviewRequired} |`);
   lines.push(`| rejected: DELIVERY_TOO_LONG | ${args.stats.shippingRejectTooLong} |`);
   lines.push(`| rejected: DELIVERY_UNCLEAR | ${args.stats.shippingRejectUnclear} |`);
+  lines.push('');
+  lines.push(`## Amazon resolver reliability`);
+  lines.push('');
+  const resolverSuccessRate =
+    args.stats.amazonSearchAttemptsTotal > 0
+      ? (args.stats.amazonSearchPagesOk / args.stats.amazonSearchAttemptsTotal) * 100
+      : 0;
+  lines.push(`| Metric | Value |`);
+  lines.push(`| --- | ---:|`);
+  lines.push(`| total Amazon search attempts | ${args.stats.amazonSearchAttemptsTotal} |`);
+  lines.push(`| successful search pages | ${args.stats.amazonSearchPagesOk} |`);
+  lines.push(`| MALFORMED_PAGE count | ${args.stats.amazonMalformedPagePagesTotal} |`);
+  lines.push(`| MALFORMED_PAGE recovered after retry | ${args.stats.amazonMalformedRecoveredAfterRetry} |`);
+  lines.push(`| CAPTCHA_OR_BLOCK count | ${args.stats.amazonCaptchaBlockPages} |`);
+  lines.push(`| TIMEOUT count | ${args.stats.amazonTimeoutPages} |`);
+  lines.push(`| EMPTY_RESULTS count | ${args.stats.amazonEmptyResultPages} |`);
+  lines.push(`| final ASIN_NOT_RESOLVED candidates | ${args.stats.amazonResolverFinalFailures} |`);
+  lines.push(`| resolver success rate (pages OK / attempts) | ${resolverSuccessRate.toFixed(1)}% |`);
   lines.push('');
   lines.push(`## Competition / saturation`);
   lines.push('');
