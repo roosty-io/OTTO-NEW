@@ -100,7 +100,7 @@ interface PatternHit {
 
 const PATTERNS: { name: string; regex: RegExp }[] = [
   { name: 'too_cheap', regex: /\b(too\s*cheap|cheap|low\s*price|low\s*ticket)\b/i },
-  { name: 'too_many_similar_listings', regex: /\b(too\s*many\s*similar|similar\s*listings|saturated|competit)\b/i },
+  { name: 'too_many_similar_listings', regex: /\b(too\s*many\s*similar|similar\s*listings|saturated|competit|too\s*many\s*sellers|many\s*sellers|too\s*many\s*comp)\b/i },
   { name: 'bulky_or_high_ticket', regex: /\b(bulky|high[- ]?ticket|heavy|oversized|garage\s*rack|tire\s*rack|too\s*big|too\s*large)\b/i },
   { name: 'brand_risk', regex: /\b(vero|brand[- ]risk|fiskars|nike|disney|apple|gucci|chanel|stanley|yeti|name[- ]?brand|trademark|copyright)\b/i },
   { name: 'low_margin', regex: /\b(low\s*margin|no\s*margin|thin\s*margin)\b/i },

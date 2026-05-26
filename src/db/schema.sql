@@ -379,13 +379,26 @@ create table if not exists business_fit_checks (
   business_fit_score numeric,
   price_quality_score numeric,
   saturation_quality_score numeric,
+  differentiation_score numeric,
   bulkiness_risk_score numeric,
   brand_caution_score numeric,
   manual_qa_pattern_penalty numeric,
+  similar_listing_penalty numeric,
+  duplicate_market_penalty numeric,
   business_fit_passed boolean,
   business_fit_rejection_reason text,
   reason_codes text[] default '{}',
   notes text[] default '{}',
+  created_at timestamptz not null default now()
+);
+
+create table if not exists manual_qa_negative_examples (
+  id uuid primary key default gen_random_uuid(),
+  asin text not null,
+  product_title text,
+  brand text,
+  reason text,
+  batch_label text,
   created_at timestamptz not null default now()
 );
 

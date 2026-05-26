@@ -43,9 +43,12 @@ export interface BusinessFitOutput {
   businessFitScore: number;
   priceQualityScore: number;
   saturationQualityScore: number;
+  differentiationScore: number;
   bulkinessRiskScore: number;
   brandCautionScore: number;
   manualQaPatternPenalty: number;
+  similarListingPenalty: number;
+  duplicateMarketPenalty: number;
   businessFitPassed: boolean;
   businessFitRejectionReason?: string;
   reasonCodes: string[];
@@ -80,10 +83,22 @@ export function scoreBusinessFit(input: BusinessFitInput): BusinessFitOutput {
 
   const manualQaPatternPenalty = scoreManualQaPatterns(input, reasonCodes, notes);
 
+  // Light differentiation/saturation tightening (learned from the
+  // post-business-fit limit=25 review: 3 of 20 "no" products were all
+  // rejected for "too many sellers / too many similar listings" despite
+  // strong demand). The differentiation score combines multiple
+  // saturation signals; a product is penalized only when several
+  // conditions hit at once, not on any single signal.
+  const differentiation = scoreDifferentiation(input, reasonCodes, notes);
+  const differentiationScore = differentiation.score;
+  const similarListingPenalty = differentiation.similarListingPenalty;
+  const duplicateMarketPenalty = differentiation.duplicateMarketPenalty;
+
   // Final blend: weighted, then drag down for high penalties.
   const blended = weightedAverage([
     { value: priceQualityScore, weight: 4 },
-    { value: saturationQualityScore, weight: 3 },
+    { value: saturationQualityScore, weight: 2.5 },
+    { value: differentiationScore, weight: 1.5 },
     { value: 100 - bulkinessRiskScore, weight: 1.5 },
     { value: 100 - brandCautionScore, weight: 1 },
     { value: 100 - manualQaPatternPenalty, weight: 0.5 },
@@ -107,9 +122,12 @@ export function scoreBusinessFit(input: BusinessFitInput): BusinessFitOutput {
     businessFitScore,
     priceQualityScore,
     saturationQualityScore,
+    differentiationScore,
     bulkinessRiskScore,
     brandCautionScore,
     manualQaPatternPenalty,
+    similarListingPenalty,
+    duplicateMarketPenalty,
     businessFitPassed,
     businessFitRejectionReason,
     reasonCodes,
@@ -200,14 +218,83 @@ function scoreSaturationQuality(input: BusinessFitInput, codes: string[], notes:
     notes.push('Generic/missing brand with many similar listings.');
   }
 
-  // High sell confidence + high saturation: still allowed but capped.
-  const sell = input.sellWithin30DaysConfidence ?? 0;
-  if (sell >= 85 && score < 60) {
-    notes.push('High sell confidence offsets some saturation - allowed but capped.');
-    score = Math.max(score, 55);
-  }
+  // (V1.1: removed the high-sell-confidence saturation forgiveness - manual
+  // QA showed strong-demand products with crowded markets still got
+  // rejected. Differentiation scoring below penalizes the pattern.)
 
   return clamp(score);
+}
+
+// ---------------------------------------------------------------------------
+// Differentiation / similar-listing / duplicate-market penalty
+// ---------------------------------------------------------------------------
+// Learned from manual QA on the post-business-fit limit=25 batch:
+// the 3 rejected products all had "too many sellers / too many similar
+// listings" as the no-reason, even though demand was strong. The penalty
+// only fires when multiple saturation conditions co-occur; it never
+// hard-rejects a product on a single signal.
+
+interface DifferentiationResult {
+  score: number;
+  similarListingPenalty: number;
+  duplicateMarketPenalty: number;
+}
+
+function scoreDifferentiation(input: BusinessFitInput, codes: string[], notes: string[]): DifferentiationResult {
+  const exact = input.exactOrSimilarMatchCount ?? 0;
+  const dup = input.duplicateRatio ?? 0;
+  const compDensity = input.competitionDensityScore ?? 0;
+  const stag = input.stagnationRiskScore ?? 0;
+  const price = input.amazonPrice ?? 0;
+  const brand = (input.brand ?? '').trim();
+  const generic = brand.length === 0 || /^generic$/i.test(brand);
+  const sell = input.sellWithin30DaysConfidence ?? 0;
+
+  const conditions: string[] = [];
+  if (exact >= 12) conditions.push('many_exact_or_similar');
+  if (dup >= 25) conditions.push('high_duplicate_ratio');
+  if (compDensity >= 70) conditions.push('high_competition_density');
+  if (stag >= 30) conditions.push('moderate_stagnation');
+  if (generic) conditions.push('generic_brand');
+  if (price > 0 && price < 25) conditions.push('low_to_mid_price');
+
+  // Stand-alone "similar listing" + "duplicate market" penalties for
+  // transparency in the data; consumed by the differentiation score
+  // below but also surfaced individually in business_fit_checks.
+  const similarListingPenalty = clamp(
+    (exact >= 20 ? 25 : exact >= 12 ? 12 : 0) + (compDensity >= 80 ? 10 : 0),
+  );
+  const duplicateMarketPenalty = clamp(
+    (dup >= 40 ? 25 : dup >= 25 ? 12 : 0) + (stag >= 35 ? 10 : 0),
+  );
+
+  let penalty = 0;
+  if (conditions.length >= 4) {
+    penalty = 35;
+    codes.push(RejectionReason.SATURATED_GENERIC_PRODUCT);
+    notes.push(`differentiation: 4+ saturation conditions (${conditions.join(', ')})`);
+  } else if (conditions.length >= 3) {
+    penalty = 22;
+    codes.push(RejectionReason.LOW_DIFFERENTIATION);
+    notes.push(`differentiation: 3 saturation conditions (${conditions.join(', ')})`);
+  } else if (conditions.length >= 2) {
+    penalty = 10;
+    if (exact >= 15) codes.push(RejectionReason.TOO_MANY_SIMILAR_LISTINGS);
+    if (dup >= 30) codes.push(RejectionReason.HIGH_DUPLICATE_MARKET);
+  }
+
+  // Slight relaxation when sell confidence is exceptionally high AND
+  // duplicates are low - don't punish a runaway leader.
+  if (sell >= 90 && dup < 20 && penalty > 0) {
+    penalty = Math.max(0, penalty - 8);
+    notes.push('differentiation: relaxed slightly for very high sell confidence + low duplicates');
+  }
+
+  return {
+    score: clamp(100 - penalty),
+    similarListingPenalty,
+    duplicateMarketPenalty,
+  };
 }
 
 function scoreBulkinessRisk(input: BusinessFitInput, codes: string[], notes: string[]): number {

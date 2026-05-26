@@ -13,6 +13,7 @@
     "check:env": "ts-node -T -r tsconfig-paths/register src/scripts/check-env.ts",
     "import:manual-qa": "ts-node -T -r tsconfig-paths/register src/scripts/import-manual-qa.ts",
     "analyze:manual-qa": "ts-node -T -r tsconfig-paths/register src/scripts/analyze-manual-qa.ts",
+    "seed:negative-examples": "ts-node -T -r tsconfig-paths/register src/scripts/seed-manual-qa-negative-examples.ts",
     "test:asin-resolver": "ts-node -T -r tsconfig-paths/register src/scripts/test-asin-resolver.ts",
     "test:amazon-source": "ts-node -T -r tsconfig-paths/register src/scripts/test-amazon-source.ts",
     "test:ebay-demand": "ts-node -T -r tsconfig-paths/register src/scripts/test-ebay-demand.ts",
