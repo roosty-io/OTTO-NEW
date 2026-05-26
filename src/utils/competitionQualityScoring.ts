@@ -73,22 +73,18 @@ export function scoreCompetitionQuality(input: CompetitionInput): CompetitionOut
   const isGenericCommodity = Boolean(containsAny(input.productTitle ?? '', COMMODITY_CUES));
   if (isGenericCommodity) notes.push('generic commodity title detected');
 
-  const sellerCompetitionScore = computeSellerCompetition(input, notes);
-  const exactMatchSaturationScore = computeExactMatchSaturation(input, notes);
-  const duplicateListingScore = computeDuplicateListing(input, notes);
-  const priceCompressionScore = computePriceCompression(input, notes);
+  const sellerCompetition = computeSellerCompetition(input, notes);
+  const exactMatchSaturation = computeExactMatchSaturation(input, notes);
+  const duplicateListing = computeDuplicateListing(input, notes);
+  const priceCompression = computePriceCompression(input, notes);
   const differentiationScore = computeDifferentiation(input);
   const sameSourceLikelihoodScore = computeSameSource(input, notes);
 
-  // Generic-commodity multiplier: bump any saturation axis that's already
-  // hot by an extra 10 points (capped at 100).  Doesn't kick in for
-  // unique branded products.
-  const commodityMultiplier = isGenericCommodity ? 10 : 0;
-  const bumpIfHot = (s: number) => clamp(s >= 50 ? s + commodityMultiplier : s);
-  const sellerCompetition = bumpIfHot(sellerCompetitionScore);
-  const exactMatchSaturation = bumpIfHot(exactMatchSaturationScore);
-  const duplicateListing = bumpIfHot(duplicateListingScore);
-  const priceCompression = bumpIfHot(priceCompressionScore);
+  // The isGenericCommodity flag is informational - we surface it in the
+  // CSV and the manual QA review so reviewers can spot patterns. We
+  // intentionally do NOT auto-bump per-axis scores when commodity=true
+  // because a previous run showed it stacked with the normal curves and
+  // over-rejected commodity-organizer products that were actually fine.
 
   // Overall competition health: start at 100, drag down by the strongest
   // concerning axes (weighted).  Highest single axis dominates so a single
@@ -136,20 +132,22 @@ export function scoreCompetitionQuality(input: CompetitionInput): CompetitionOut
 // ---------------------------------------------------------------------------
 
 function computeSellerCompetition(input: CompetitionInput, notes: string[]): number {
+  // Commodity categories on eBay routinely return 20-30 unique sellers
+  // without that being a problem - only crowd-race levels of seller count
+  // should trigger the gate. Curve tuned so a typical organizer market
+  // (sellers=22, low concentration) stays under MAX=80.
   const sellerCount = input.sellerCount ?? 0;
   const concentration = input.sellerConcentrationScore ?? 0;
-  // Many unique sellers = crowded market.  Low concentration alongside
-  // high seller count = commodity race.
   let s = 0;
-  if (sellerCount >= 25) s += 55;
-  else if (sellerCount >= 15) s += 35;
-  else if (sellerCount >= 8) s += 15;
-  // Very low concentration (no single brand owns the market) + many sellers
-  // = textbook commodity competition.
-  if (sellerCount >= 12 && concentration < 25) s += 25;
-  // Extreme concentration (1 seller > 75%) is its own problem, but the
-  // demand engine already handles stagnation - flag lightly here.
-  if (concentration >= 75) s += 10;
+  if (sellerCount >= 45) s += 75;
+  else if (sellerCount >= 32) s += 55;
+  else if (sellerCount >= 22) s += 30;
+  else if (sellerCount >= 12) s += 10;
+  // Very low concentration (no brand owns the market) + many sellers
+  // = commodity race; tighten only when both are clearly hot.
+  if (sellerCount >= 25 && concentration < 18) s += 20;
+  // Extreme concentration (1 seller > 80%) is suspicious.
+  if (concentration >= 80) s += 10;
   if (s > 0) notes.push(`seller_competition sellers=${sellerCount} conc=${concentration.toFixed(0)}`);
   return clamp(s);
 }
