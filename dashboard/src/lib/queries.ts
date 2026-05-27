@@ -73,7 +73,11 @@ export function useLatestRun() {
         gte: { col, value: since },
       });
       const counts = await Promise.all([
-        countWhere('asin_candidates', { ...inWindow('created_at'), eq: { col: 'accepted', value: true } }),
+        // asin_candidates writes one row per resolver attempt, so a naive
+        // count over accepted=true overcounts (the resolver tries several
+        // search variations and may accept more than one match per
+        // raw_candidate). Count distinct products instead.
+        countDistinctProducts('asin_candidates', { ...inWindow('created_at'), eq: { col: 'accepted', value: true } }),
         countWhere('amazon_source_checks', { ...inWindow('created_at'), eq: { col: 'source_valid', value: true } }),
         countWhere('amazon_source_checks', { ...inWindow('created_at'), eq: { col: 'source_valid', value: false } }),
         countWhere('ebay_demand_checks', { ...inWindow('created_at'), eq: { col: 'demand_passed', value: true } }),
@@ -176,6 +180,23 @@ async function countWhere(table: string, where: CountWhere): Promise<number> {
   const { count, error } = await q;
   if (error) return 0;
   return count ?? 0;
+}
+
+// Distinct-products count.  PostgREST doesn't support SELECT DISTINCT
+// counts, so we fetch the otto_product_id column for the filter window
+// and dedupe in JS.  Cheap for V1 row counts.
+async function countDistinctProducts(table: string, where: CountWhere): Promise<number> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let q: any = supabase().from(table).select('otto_product_id');
+  if (where.eq) q = q.eq(where.eq.col, where.eq.value);
+  if (where.gte) q = q.gte(where.gte.col, where.gte.value);
+  const { data, error } = await q;
+  if (error || !data) return 0;
+  const ids = new Set<string>();
+  for (const row of data as { otto_product_id: string | null }[]) {
+    if (row.otto_product_id) ids.add(row.otto_product_id);
+  }
+  return ids.size;
 }
 
 function emptyMetrics(): LatestRun['metrics'] {

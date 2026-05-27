@@ -429,6 +429,31 @@ CSV path             location of the latest export file
 Stage-by-stage drop-offs and the `rejection reasons` breakdown make it
 obvious which validation gate is filtering the most candidates.
 
+## Ops dashboard
+
+A read-only Vite + React dashboard lives under `dashboard/`. It queries
+the OTTO Supabase project with the **anon key only** (the service-role
+key never leaves the backend). Use it locally or on Replit to inspect
+every signal the pipeline writes.
+
+```bash
+cd dashboard
+cp .env.example .env             # fill in VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
+npm install
+npm run dev                      # http://localhost:5173
+```
+
+Offline preview (no Supabase):
+
+```bash
+VITE_MOCK_DASHBOARD=true npm run dev
+```
+
+Pages: Command Center, Pipeline Funnel, Validated Products, Rejected
+Products, Competition Review, Shipping Review, Export Center, Manual QA,
+Agent Logs, Discovery Agents. See `dashboard/README.md` for the full
+per-page breakdown.
+
 ## Project layout
 
 ```

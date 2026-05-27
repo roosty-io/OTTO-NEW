@@ -75,13 +75,19 @@ export function CompetitionReview() {
     {
       key: 'codes',
       header: 'Reason codes',
-      cell: (r) => (
-        <div className="flex flex-wrap gap-1">
-          {(r.reason_codes ?? []).filter((c) => COMP_CODES.has(c)).map((c) => (
-            <Badge key={c} tone="bad">{c}</Badge>
-          ))}
-        </div>
-      ),
+      cell: (r) => {
+        // Dedupe: backend occasionally writes the same code twice
+        // (e.g. HIGH_DUPLICATE_MARKET emitted by both the saturation and
+        // duplicate sub-checks).  No value in showing the same badge twice.
+        const codes = [...new Set((r.reason_codes ?? []).filter((c) => COMP_CODES.has(c)))];
+        return (
+          <div className="flex flex-wrap gap-1">
+            {codes.map((c) => (
+              <Badge key={c} tone="bad">{c}</Badge>
+            ))}
+          </div>
+        );
+      },
       width: '24%',
     },
   ];
