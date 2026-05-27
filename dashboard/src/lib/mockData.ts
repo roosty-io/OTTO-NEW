@@ -1,0 +1,237 @@
+// Canned mock data for VITE_MOCK_DASHBOARD=true.  Mirrors the V1.4
+// confirmation batch (9 exports, 77.8% manual QA approval) so the layout
+// can be exercised offline.
+
+import type {
+  AgentLog,
+  AmazonSourceCheck,
+  BusinessFitCheck,
+  ExportBatch,
+  LatestRun,
+  ManualQaReview,
+  RejectedProduct,
+  ValidatedProduct,
+} from './types';
+
+export const latestRun: LatestRun = {
+  runId: 'mock-run-id',
+  exportBatchId: 'mock-export-batch',
+  csvPath: 'exports/otto-validated-mock.csv',
+  manualQaCsvPath: 'exports/otto_manual_qa_review_mock.csv',
+  metrics: {
+    rawCandidates: 125,
+    asinResolved: 50,
+    asinFailed: 75,
+    amazonSourceValid: 39,
+    amazonSourceFailed: 11,
+    demandPassed: 31,
+    demandFailed: 8,
+    compliancePassed: 30,
+    complianceFailed: 1,
+    businessFitPassed: 10,
+    businessFitFailed: 20,
+    finalValidated: 9,
+    finalValidatedBeforeDedupe: 9,
+    duplicateAsinsRemoved: 0,
+    exportedAfterDedupe: 9,
+    endToEndPassRate: 7.2,
+    shippingReviewRequired: 2,
+    topRejectionReason: 'HIGH_DUPLICATE_MARKET (15)',
+    latestManualQaApprovalRate: 77.8,
+  },
+};
+
+const NOW = new Date().toISOString();
+
+export const validated_products: ValidatedProduct[] = [
+  mockProduct('B0DZC7TZNL', 'Klutch Garage Overhead Storage Rack 48"L x 24"D', 'Klutch', 49.99, 4, 88, 25, 0, 86),
+  mockProduct('B0B6RCKQBS', 'Parts Screws Storage Organizer 25 Drawers', 'whillar', 23.99, 6, 85, 10, 0, 86),
+  mockProduct('B0FBGHHYM7', '3-Layer Storage Box with Handle', 'Rainfordhoma', 20.58, 5, 79, 25, 0, 82),
+  mockProduct('B098QQ2B4B', 'HappyPicnic Garden Kneeling Pad', 'HappyPicnic', 17.98, 5, 85, 25, 0, 82),
+  mockProduct('B0FK3K1228', '24QT Craft Storage Box with Removable Trays', 'Generic', 24.66, 5, 76, 25, 0, 81),
+  mockProduct('B0FLJ569XQ', '64" Garage Tool Organizer Wall Mount', 'Lvoess', 26.99, 5, 81, 25, 15, 80),
+  mockProduct('B0GHZNDHKP', 'Grenebo Garden Kneeling Pad', 'Grenebo', 17.99, 5, 83, 25, 0, 80),
+  mockProduct('B0DTY91JWP', 'Tire Rack 60"x59"x21" Rolling', 'OLIPIC', 95.75, 8, 73, 25, 0, 78),
+  mockProduct('B0D6FP8CS2', 'YSSOA Garden Kneeler & Seat Foldable Bench', 'YSSOA', 32.99, 9, 72, 25, 0, 78),
+];
+
+function mockProduct(
+  asin: string,
+  title: string,
+  brand: string,
+  price: number,
+  delivery: number,
+  conf: number,
+  stag: number,
+  policy: number,
+  final: number,
+): ValidatedProduct {
+  return {
+    otto_product_id: `OTTO-MOCK-${asin}`,
+    asin,
+    amazon_url: `https://www.amazon.com/dp/${asin}`,
+    product_title: title,
+    brand,
+    amazon_category: 'Home & Kitchen > Storage & Organization',
+    amazon_price: price,
+    delivery_days: delivery,
+    stock_status: 'in_stock',
+    rating: 4.5,
+    review_count: 1000,
+    source_confidence_score: 90,
+    product_match_type: 'SIMILAR_PRODUCT',
+    opportunity_type: 'direct_match',
+    marketplace_signal_sources: ['ebay_browse_api'],
+    primary_discovery_source: 'ebay_browse_api',
+    core_keyword: 'storage organizer',
+    ebay_category_hint: 'Home & Garden',
+    demand_type: 'steady',
+    sell_within_30_days_confidence: conf,
+    stagnation_risk_score: stag,
+    demand_score: 80,
+    policy_risk_score: policy,
+    final_validation_score: final,
+    validation_status: 'validated',
+    validated_at: NOW,
+  };
+}
+
+export const rejected_products: RejectedProduct[] = [
+  rej('asin_resolution', 'ASIN_NOT_RESOLVED', 75),
+  rej('business_fit', 'HIGH_DUPLICATE_MARKET', 15),
+  rej('amazon_source', 'BUNDLE_OR_MULTIPACK_EXCLUDED', 5),
+  rej('demand', 'LOW_DEMAND_SCORE', 5),
+  rej('amazon_source', 'AMAZON_PRICE_MISSING', 3),
+  rej('business_fit', 'TOO_CHEAP', 3),
+].flatMap((r) => r);
+
+function rej(stage: string, reason: string, n: number): RejectedProduct[] {
+  return Array.from({ length: n }, (_, i) => ({
+    id: `mock-${stage}-${reason}-${i}`,
+    otto_product_id: `OTTO-MOCK-REJ-${stage}-${i}`,
+    stage,
+    reason,
+    details: {},
+    created_at: NOW,
+  }));
+}
+
+export const business_fit_checks: BusinessFitCheck[] = validated_products.map((p, i) => ({
+  id: `bf-${i}`,
+  otto_product_id: p.otto_product_id,
+  asin: p.asin,
+  amazon_url: p.amazon_url,
+  amazon_price: p.amazon_price,
+  product_title: p.product_title,
+  brand: p.brand,
+  business_fit_score: 80 - i,
+  price_quality_score: 90,
+  saturation_quality_score: 70,
+  differentiation_score: 65,
+  bulkiness_risk_score: 15,
+  brand_caution_score: 0,
+  competition_quality_score: 70 - i * 2,
+  seller_competition_score: 50 + i * 2,
+  exact_match_saturation_score: 30,
+  duplicate_listing_score: 35,
+  price_compression_score: 10,
+  is_generic_commodity: i % 2 === 0,
+  competition_gate_result: i < 3 ? 'healthy' : 'borderline',
+  competition_rejection_reason: null,
+  seller_count: 40 + i * 4,
+  exact_or_similar_match_count: 5 + i,
+  duplicate_ratio: 40 + i,
+  business_fit_passed: true,
+  business_fit_rejection_reason: null,
+  reason_codes: i % 2 === 0 ? ['GENERIC_COMMODITY_MARKET'] : [],
+  notes: [],
+  created_at: NOW,
+}));
+
+export const amazon_source_checks: AmazonSourceCheck[] = validated_products.map((p, i) => ({
+  id: `as-${i}`,
+  otto_product_id: p.otto_product_id,
+  asin: p.asin,
+  amazon_url: p.amazon_url,
+  product_title: p.product_title,
+  brand: p.brand,
+  source_price: p.amazon_price,
+  delivery_days: p.delivery_days,
+  estimated_delivery_days: p.delivery_days,
+  delivery_text: `FREE delivery in ${p.delivery_days} days`,
+  raw_delivery_text: `FREE delivery in ${p.delivery_days} days`,
+  delivery_context: 'public_guest_zip',
+  prime_signal_detected: i % 2 === 0,
+  prime_signal_source: i % 2 === 0 ? 'prime_badge' : null,
+  fba_signal_detected: i === 7,
+  ships_from_amazon: i === 7,
+  sold_by_amazon: i === 7,
+  fulfilled_by_amazon: i === 7,
+  shipping_gate_result: i === 7 ? 'prime_likely_pass' : 'pass',
+  shipping_review_required: i === 7,
+  source_valid: true,
+  rejection_reason: null,
+  reasons: [],
+  created_at: NOW,
+}));
+
+export const export_batches: ExportBatch[] = [
+  {
+    id: 'mock-export-batch',
+    discovery_run_id: 'mock-run-id',
+    file_path: 'exports/otto-validated-mock.csv',
+    row_count: 9,
+    final_validated_before_dedupe: 9,
+    duplicate_asins_removed: 0,
+    final_exported_after_dedupe: 9,
+    status: 'completed',
+    created_at: NOW,
+  },
+];
+
+export const manual_qa_reviews: ManualQaReview[] = validated_products.map((p, i) => ({
+  id: `qa-${i}`,
+  otto_product_id: p.otto_product_id,
+  asin: p.asin,
+  amazon_url: p.amazon_url,
+  product_title: p.product_title,
+  brand: p.brand,
+  amazon_price: p.amazon_price,
+  delivery_days: p.delivery_days,
+  sell_within_30_days_confidence: p.sell_within_30_days_confidence,
+  stagnation_risk_score: p.stagnation_risk_score,
+  policy_risk_score: p.policy_risk_score,
+  final_validation_score: p.final_validation_score,
+  would_list_yes_no: i === 3 || i === 6 ? 'no' : 'yes',
+  asin_real_yes_no: 'yes',
+  demand_makes_sense_yes_no: 'yes',
+  low_risk_yes_no: 'yes',
+  notes: i === 3 || i === 6 ? 'too many sellers on ebay' : null,
+  reviewed_at: NOW,
+  source_file: 'exports/otto_manual_qa_review_mock.csv',
+  batch_label: 'mock v1.4 confirmation',
+  created_at: NOW,
+}));
+
+export const agent_logs: AgentLog[] = [
+  log('EbayKeywordDiscoveryAgent', 'info', 'Candidate discovered'),
+  log('BasicAmazonAsinResolverAgent', 'info', 'Resolved ASIN B0DZC7TZNL (SIMILAR_PRODUCT, conf=84, attempts=10)'),
+  log('AmazonSourceValidationAgent', 'info', 'AmazonSourceValidationAgent pass (100)'),
+  log('EbayDemandScoringAgent', 'info', 'EbayDemandScoringAgent pass (84)'),
+  log('ComplianceRiskCouncil', 'info', 'ComplianceRiskCouncil pass (0)'),
+  log('BusinessFitAgent', 'info', 'BusinessFitAgent pass (86)'),
+  log('CsvExportAgent', 'info', 'CSV export complete'),
+];
+
+function log(agent: string, level: string, message: string): AgentLog {
+  return {
+    id: `log-${agent}-${Math.random()}`,
+    agent_name: agent,
+    otto_product_id: 'OTTO-MOCK',
+    discovery_run_id: 'mock-run-id',
+    level,
+    message,
+    data: {},
+    created_at: NOW,
+  };
+}

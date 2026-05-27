@@ -2,6 +2,10 @@ node_modules
 dist
 .env
 .env.local
+dashboard/node_modules
+dashboard/dist
+dashboard/.env
+dashboard/.env.local
 *.log
 .DS_Store
 .idea
