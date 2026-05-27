@@ -27,7 +27,6 @@ import { getSupabase } from '@/clients/supabaseClient';
 import { getAmazonBrowserClient } from '@/clients/amazonBrowserClient';
 import { logger } from '@/utils/logger';
 import { env } from '@/config/env';
-import { writeCsv } from '@/utils/csv';
 import { RejectionReason } from '@/utils/rejectionReasons';
 
 import { EbayKeywordDiscoveryAgent } from '@/agents/discovery/EbayKeywordDiscoveryAgent';
@@ -393,6 +392,7 @@ async function main(): Promise<void> {
       fulfilledByAmazon: amazonData.fulfilledByAmazon,
       shippingGateResult: amazonData.shippingGateResult,
       shippingReviewRequired: amazonData.shippingReviewRequired,
+      businessFitScore: businessFitResult.data.businessFitScore,
       competitionQualityScore: businessFitResult.data.competitionQualityScore,
       sellerCompetitionScore: businessFitResult.data.sellerCompetitionScore,
       exactMatchSaturationScore: businessFitResult.data.exactMatchSaturationScore,
@@ -450,13 +450,13 @@ async function main(): Promise<void> {
     });
   }
 
-  // 9. Main CSV export (the agent re-dedupes defensively but will be a no-op).
+  // 9. Export.  CsvExportAgent re-dedupes defensively (no-op here),
+  // writes the canonical CSV + manual QA CSV, persists to
+  // validated_products, and records the export_batches row.
   const exporter = new CsvExportAgent();
   const exportResult = await exporter.run({ products: dedupedProducts, discoveryRunId: runId });
   stats.exportedCount = exportResult.data.rowCount;
-
-  // 10. Manual QA review CSV - also written from the deduped set.
-  const qaPath = writeManualQaCsv(dedupedProducts);
+  const qaPath = exportResult.data.manualQaCsvPath;
 
   try {
     await supabase.from('discovery_runs').update({
@@ -512,87 +512,6 @@ function parseArgs(): { keywords: string[]; limit: number } {
     }
   }
   return { keywords, limit };
-}
-
-function writeManualQaCsv(products: ValidatedProduct[]): string {
-  const columns = [
-    'otto_product_id',
-    'asin',
-    'amazon_url',
-    'product_title',
-    'brand',
-    'amazon_price',
-    'delivery_days',
-    'raw_delivery_text',
-    'delivery_context',
-    'prime_signal_detected',
-    'prime_signal_source',
-    'fba_signal_detected',
-    'ships_from_amazon',
-    'sold_by_amazon',
-    'fulfilled_by_amazon',
-    'shipping_gate_result',
-    'shipping_review_required',
-    'competition_quality_score',
-    'exact_match_saturation_score',
-    'duplicate_listing_score',
-    'price_compression_score',
-    'seller_count',
-    'exact_or_similar_match_count',
-    'duplicate_ratio',
-    'competition_gate_result',
-    'competition_rejection_reason',
-    'sell_within_30_days_confidence',
-    'stagnation_risk_score',
-    'policy_risk_score',
-    'final_validation_score',
-    'would_list_yes_no',
-    'asin_real_yes_no',
-    'demand_makes_sense_yes_no',
-    'low_risk_yes_no',
-    'notes',
-  ];
-  const rows = products.map((p) => ({
-    otto_product_id: p.ottoProductId,
-    asin: p.asin,
-    amazon_url: p.amazonUrl,
-    product_title: p.productTitle,
-    brand: p.brand,
-    amazon_price: p.amazonPrice,
-    delivery_days: p.deliveryDays,
-    raw_delivery_text: p.rawDeliveryText,
-    delivery_context: p.deliveryContext,
-    prime_signal_detected: p.primeSignalDetected,
-    prime_signal_source: p.primeSignalSource,
-    fba_signal_detected: p.fbaSignalDetected,
-    ships_from_amazon: p.shipsFromAmazon,
-    sold_by_amazon: p.soldByAmazon,
-    fulfilled_by_amazon: p.fulfilledByAmazon,
-    shipping_gate_result: p.shippingGateResult,
-    shipping_review_required: p.shippingReviewRequired,
-    competition_quality_score: p.competitionQualityScore,
-    exact_match_saturation_score: p.exactMatchSaturationScore,
-    duplicate_listing_score: p.duplicateListingScore,
-    price_compression_score: p.priceCompressionScore,
-    seller_count: p.sellerCount,
-    exact_or_similar_match_count: p.exactOrSimilarMatchCount,
-    duplicate_ratio: p.duplicateRatio,
-    competition_gate_result: p.competitionGateResult,
-    competition_rejection_reason: p.competitionRejectionReason,
-    sell_within_30_days_confidence: p.sellWithin30DaysConfidence,
-    stagnation_risk_score: p.stagnationRiskScore,
-    policy_risk_score: p.policyRiskScore,
-    final_validation_score: p.finalValidationScore,
-    would_list_yes_no: '',
-    asin_real_yes_no: '',
-    demand_makes_sense_yes_no: '',
-    low_risk_yes_no: '',
-    notes: '',
-  }));
-  const stamp = new Date().toISOString().slice(0, 10);
-  const filename = `otto_manual_qa_review_${stamp}.csv`;
-  const out = writeCsv(env.exportDir, filename, columns, rows);
-  return out.filePath;
 }
 
 function printSummary(args: {

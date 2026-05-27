@@ -286,7 +286,9 @@ create table if not exists final_validation_results (
 
 create table if not exists validated_products (
   id uuid primary key default gen_random_uuid(),
-  otto_product_id text unique not null,
+  otto_product_id text not null,
+  export_batch_id uuid not null,
+  discovery_run_id uuid,
   asin text not null,
   parent_asin text,
   child_asin text,
@@ -298,6 +300,16 @@ create table if not exists validated_products (
   amazon_price numeric not null,
   coupon_detected boolean default false,
   delivery_days int,
+  raw_delivery_text text,
+  delivery_context text,
+  prime_signal_detected boolean,
+  prime_signal_source text,
+  fba_signal_detected boolean,
+  ships_from_amazon boolean,
+  sold_by_amazon boolean,
+  fulfilled_by_amazon boolean,
+  shipping_gate_result text,
+  shipping_review_required boolean,
   stock_status text,
   rating numeric,
   review_count int,
@@ -326,12 +338,23 @@ create table if not exists validated_products (
   edge_case_risk_score numeric,
   fragility_score numeric,
   variation_confusion_score numeric,
+  business_fit_score numeric,
+  competition_quality_score numeric,
   total_cost_estimate numeric,
   predicted_monthly_profit_per_100_listings numeric,
   final_validation_score numeric,
   validation_status text not null default 'validated',
-  validated_at timestamptz not null default now()
+  validated_at timestamptz not null default now(),
+  exported_at timestamptz,
+  csv_export_path text,
+  is_synthetic boolean not null default false
 );
+
+-- Per-batch ASIN uniqueness lets us idempotently upsert exports.
+alter table validated_products
+  drop constraint if exists validated_products_batch_asin_uniq;
+alter table validated_products
+  add constraint validated_products_batch_asin_uniq unique (export_batch_id, asin);
 
 create table if not exists rejected_products (
   id uuid primary key default gen_random_uuid(),
@@ -354,7 +377,8 @@ create table if not exists export_batches (
   duplicate_asins_removed int default 0,
   final_exported_after_dedupe int default 0,
   status text not null default 'completed',
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  is_synthetic boolean not null default false
 );
 
 create table if not exists deduped_products (
@@ -566,6 +590,10 @@ create index if not exists idx_raw_candidates_run on raw_candidates(discovery_ru
 create index if not exists idx_agent_logs_product on agent_logs(otto_product_id);
 create index if not exists idx_agent_logs_run on agent_logs(discovery_run_id);
 create index if not exists idx_validated_products_validated_at on validated_products(validated_at desc);
+create index if not exists idx_validated_products_export_batch on validated_products(export_batch_id);
+create index if not exists idx_validated_products_run on validated_products(discovery_run_id);
+create index if not exists idx_validated_products_synthetic on validated_products(is_synthetic);
+create index if not exists idx_export_batches_synthetic on export_batches(is_synthetic);
 create index if not exists idx_rejected_products_product on rejected_products(otto_product_id);
 create index if not exists idx_asin_candidates_product on asin_candidates(otto_product_id);
 create index if not exists idx_asin_candidates_accepted on asin_candidates(accepted);

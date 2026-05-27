@@ -39,12 +39,17 @@ export function useLatestRun() {
     queryKey: ['latest-run'],
     queryFn: async () => {
       if (MOCK || !SUPABASE_CONFIGURED) return mock.latestRun;
-      // Most recent export_batch is the canonical "latest run".
-      const batches = await fetchTable<ExportBatch>('export_batches', {
-        order: { col: 'created_at', ascending: false },
-        limit: 1,
-      });
-      const latestBatch = batches[0];
+      // Most recent NON-SYNTHETIC export_batch is the canonical "latest run".
+      // Synthetic batches (run-test-pipeline + offline tests) are excluded
+      // so the Command Center always reflects real QA work.
+      const { data: batchRows, error: batchErr } = await supabase()
+        .from('export_batches')
+        .select('*')
+        .eq('is_synthetic', false)
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (batchErr) throw new Error(`export_batches: ${batchErr.message}`);
+      const latestBatch = ((batchRows ?? []) as ExportBatch[])[0];
       if (!latestBatch) {
         return {
           runId: '',
@@ -102,6 +107,14 @@ export function useLatestRun() {
       ] = counts;
       const asinFailed = Math.max(0, rawCandidates - asinResolved);
 
+      // Prefer the export_batch's own final count over the window count
+      // for the funnel "final validated" stage -- the window can include
+      // products that passed final-validation but were filtered out by
+      // business-fit / dedupe afterwards.  Keeping the chart consistent
+      // with what was actually exported.
+      const finalValidatedFromBatch = latestBatch.final_validated_before_dedupe ?? finalValidated;
+      const finalValidatedForChart = finalValidatedFromBatch;
+
       // Shipping review required (current run window).
       const shippingReviewRequired = await countWhere('amazon_source_checks', {
         ...inWindow('created_at'),
@@ -134,7 +147,7 @@ export function useLatestRun() {
       const yes = reviewed.filter((r) => r.would_list_yes_no === 'yes').length;
       const latestManualQaApprovalRate = reviewed.length > 0 ? (yes / reviewed.length) * 100 : null;
 
-      const endToEndPassRate = rawCandidates > 0 ? (finalValidated / rawCandidates) * 100 : 0;
+      const endToEndPassRate = rawCandidates > 0 ? (finalValidatedForChart / rawCandidates) * 100 : 0;
 
       return {
         runId,
@@ -153,8 +166,8 @@ export function useLatestRun() {
           complianceFailed,
           businessFitPassed,
           businessFitFailed,
-          finalValidated,
-          finalValidatedBeforeDedupe: latestBatch.final_validated_before_dedupe ?? finalValidated,
+          finalValidated: finalValidatedForChart,
+          finalValidatedBeforeDedupe: finalValidatedFromBatch,
           duplicateAsinsRemoved: latestBatch.duplicate_asins_removed ?? 0,
           exportedAfterDedupe: latestBatch.final_exported_after_dedupe ?? latestBatch.row_count,
           endToEndPassRate,
@@ -234,10 +247,85 @@ function deriveQaPath(csvPath: string | null): string | null {
 // Per-page queries
 // ---------------------------------------------------------------------------
 
-export function useValidatedProducts(limit = 500) {
+export interface ValidatedProductsOptions {
+  limit?: number;
+  /** When set, filter to this export batch (uuid). */
+  exportBatchId?: string | null;
+  /** Include is_synthetic=true rows. Defaults to false (real exports only). */
+  includeSynthetic?: boolean;
+}
+
+export function useValidatedProducts(opts: ValidatedProductsOptions = {}) {
+  const { limit = 500, exportBatchId, includeSynthetic = false } = opts;
   return useQuery<ValidatedProduct[]>({
-    queryKey: ['validated_products', limit],
-    queryFn: () => fetchTable('validated_products', { order: { col: 'validated_at', ascending: false }, limit }),
+    queryKey: ['validated_products', limit, exportBatchId ?? null, includeSynthetic],
+    queryFn: async () => {
+      if (MOCK || !SUPABASE_CONFIGURED) {
+        const all = (mock.validated_products ?? []) as ValidatedProduct[];
+        return all.filter((p) => (includeSynthetic ? true : !p.is_synthetic))
+          .filter((p) => (exportBatchId ? p.export_batch_id === exportBatchId : true))
+          .slice(0, limit);
+      }
+      let q = supabase()
+        .from('validated_products')
+        .select('*')
+        .order('validated_at', { ascending: false })
+        .limit(limit);
+      if (!includeSynthetic) q = q.eq('is_synthetic', false);
+      if (exportBatchId) q = q.eq('export_batch_id', exportBatchId);
+      const { data, error } = await q;
+      if (error) throw new Error(`validated_products: ${error.message}`);
+      return (data ?? []) as ValidatedProduct[];
+    },
+  });
+}
+
+/**
+ * Distinct export batches that have validated_products rows, latest first.
+ * Used by the page-level batch selector.
+ */
+export function useValidatedProductBatches(includeSynthetic = false) {
+  return useQuery<{ exportBatchId: string; latestExportedAt: string | null; rowCount: number }[]>({
+    queryKey: ['validated_product_batches', includeSynthetic],
+    queryFn: async () => {
+      if (MOCK || !SUPABASE_CONFIGURED) {
+        const rows = (mock.validated_products ?? []) as ValidatedProduct[];
+        const map = new Map<string, { latest: string | null; n: number }>();
+        for (const r of rows) {
+          if (!r.export_batch_id) continue;
+          if (!includeSynthetic && r.is_synthetic) continue;
+          const cur = map.get(r.export_batch_id) ?? { latest: null, n: 0 };
+          cur.n += 1;
+          if (!cur.latest || (r.exported_at ?? '') > cur.latest) cur.latest = r.exported_at ?? null;
+          map.set(r.export_batch_id, cur);
+        }
+        return [...map.entries()].map(([exportBatchId, v]) => ({
+          exportBatchId,
+          latestExportedAt: v.latest,
+          rowCount: v.n,
+        })).sort((a, b) => (b.latestExportedAt ?? '').localeCompare(a.latestExportedAt ?? ''));
+      }
+      let q = supabase()
+        .from('validated_products')
+        .select('export_batch_id, exported_at, is_synthetic')
+        .limit(5000);
+      if (!includeSynthetic) q = q.eq('is_synthetic', false);
+      const { data, error } = await q;
+      if (error) throw new Error(`validated_products batches: ${error.message}`);
+      const map = new Map<string, { latest: string | null; n: number }>();
+      for (const row of (data ?? []) as { export_batch_id: string | null; exported_at: string | null }[]) {
+        if (!row.export_batch_id) continue;
+        const cur = map.get(row.export_batch_id) ?? { latest: null, n: 0 };
+        cur.n += 1;
+        if (!cur.latest || (row.exported_at ?? '') > cur.latest) cur.latest = row.exported_at ?? null;
+        map.set(row.export_batch_id, cur);
+      }
+      return [...map.entries()].map(([exportBatchId, v]) => ({
+        exportBatchId,
+        latestExportedAt: v.latest,
+        rowCount: v.n,
+      })).sort((a, b) => (b.latestExportedAt ?? '').localeCompare(a.latestExportedAt ?? ''));
+    },
   });
 }
 

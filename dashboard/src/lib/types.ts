@@ -18,10 +18,13 @@ export interface ExportBatch {
   final_exported_after_dedupe: number | null;
   status: string;
   created_at: string;
+  is_synthetic: boolean;
 }
 
 export interface ValidatedProduct {
   otto_product_id: string;
+  export_batch_id: string | null;
+  discovery_run_id: string | null;
   asin: string;
   amazon_url: string;
   product_title: string;
@@ -47,6 +50,22 @@ export interface ValidatedProduct {
   final_validation_score: number | null;
   validation_status: string | null;
   validated_at: string;
+  // Persistence metadata added in V1.5
+  raw_delivery_text: string | null;
+  delivery_context: string | null;
+  prime_signal_detected: boolean | null;
+  prime_signal_source: string | null;
+  fba_signal_detected: boolean | null;
+  ships_from_amazon: boolean | null;
+  sold_by_amazon: boolean | null;
+  fulfilled_by_amazon: boolean | null;
+  shipping_gate_result: string | null;
+  shipping_review_required: boolean | null;
+  business_fit_score: number | null;
+  competition_quality_score: number | null;
+  exported_at: string | null;
+  csv_export_path: string | null;
+  is_synthetic: boolean;
 }
 
 export interface BusinessFitCheck {

@@ -85,6 +85,9 @@ export interface ValidatedProduct {
   shippingGateResult?: 'pass' | 'prime_likely_pass' | 'reject';
   shippingReviewRequired?: boolean;
 
+  // Business fit (V1.4)
+  businessFitScore?: number;
+
   // Competition gate (V1.2)
   competitionQualityScore?: number;
   sellerCompetitionScore?: number;

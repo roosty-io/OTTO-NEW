@@ -7,21 +7,30 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { CopyButton } from '@/components/CopyButton';
 import { EmptyState, ErrorState, LoadingState } from '@/components/States';
-import { useAmazonSourceChecks, useBusinessFitChecks, useValidatedProducts } from '@/lib/queries';
-import { fmtMoney, fmtNum } from '@/lib/utils';
+import {
+  useAmazonSourceChecks,
+  useBusinessFitChecks,
+  useValidatedProducts,
+  useValidatedProductBatches,
+} from '@/lib/queries';
+import { fmtDate, fmtMoney, fmtNum } from '@/lib/utils';
 import type { AmazonSourceCheck, BusinessFitCheck, ValidatedProduct } from '@/lib/types';
 
-interface MergedRow extends ValidatedProduct {
-  raw_delivery_text?: string | null;
-  shipping_gate_result?: string | null;
-  shipping_review_required?: boolean | null;
-  business_fit_score?: number | null;
-  competition_quality_score?: number | null;
-  export_batch_id?: string | null;
-}
+type MergedRow = ValidatedProduct;
 
 export function ValidatedProducts() {
-  const products = useValidatedProducts();
+  const [selectedBatch, setSelectedBatch] = useState<string>(''); // '' = latest
+  const [showSynthetic, setShowSynthetic] = useState(false);
+
+  const batches = useValidatedProductBatches(showSynthetic);
+  // Latest batch = first entry (sorted by exported_at desc by the hook).
+  const latestBatchId = batches.data?.[0]?.exportBatchId ?? null;
+  const effectiveBatchId = selectedBatch || latestBatchId || undefined;
+
+  const products = useValidatedProducts({
+    exportBatchId: effectiveBatchId,
+    includeSynthetic: showSynthetic,
+  });
   const sourceChecks = useAmazonSourceChecks();
   const businessFit = useBusinessFitChecks();
 
@@ -37,6 +46,9 @@ export function ValidatedProducts() {
   const [reviewOnly, setReviewOnly] = useState(false);
   const [primeOnly, setPrimeOnly] = useState(false);
 
+  // Prefer fields persisted on validated_products itself; fall back to
+  // joined amazon_source_checks / business_fit_checks rows for older
+  // products that pre-date V1.5 persistence.
   const merged: MergedRow[] = useMemo(() => {
     if (!products.data) return [];
     const sourceByAsin = new Map<string, AmazonSourceCheck>();
@@ -45,12 +57,11 @@ export function ValidatedProducts() {
     for (const f of businessFit.data ?? []) if (f.asin) fitByAsin.set(f.asin, f);
     return products.data.map((p) => ({
       ...p,
-      raw_delivery_text: sourceByAsin.get(p.asin)?.raw_delivery_text ?? null,
-      shipping_gate_result: sourceByAsin.get(p.asin)?.shipping_gate_result ?? null,
-      shipping_review_required: sourceByAsin.get(p.asin)?.shipping_review_required ?? null,
-      business_fit_score: fitByAsin.get(p.asin)?.business_fit_score ?? null,
-      competition_quality_score: fitByAsin.get(p.asin)?.competition_quality_score ?? null,
-      export_batch_id: null,
+      raw_delivery_text: p.raw_delivery_text ?? sourceByAsin.get(p.asin)?.raw_delivery_text ?? null,
+      shipping_gate_result: p.shipping_gate_result ?? sourceByAsin.get(p.asin)?.shipping_gate_result ?? null,
+      shipping_review_required: p.shipping_review_required ?? sourceByAsin.get(p.asin)?.shipping_review_required ?? null,
+      business_fit_score: p.business_fit_score ?? fitByAsin.get(p.asin)?.business_fit_score ?? null,
+      competition_quality_score: p.competition_quality_score ?? fitByAsin.get(p.asin)?.competition_quality_score ?? null,
     }));
   }, [products.data, sourceChecks.data, businessFit.data]);
 
@@ -158,12 +169,72 @@ export function ValidatedProducts() {
   if (products.isLoading) return <Layout title="Validated Products"><LoadingState /></Layout>;
   if (products.error) return <Layout title="Validated Products"><ErrorState error={products.error} /></Layout>;
 
+  const batchList = batches.data ?? [];
+  const subtitle = effectiveBatchId
+    ? `${filtered.length} of ${merged.length} validated products in batch ${effectiveBatchId.slice(0, 8)}…`
+    : `${filtered.length} of ${merged.length} validated products`;
+
   return (
-    <Layout title="Validated Products" subtitle={`${filtered.length} of ${merged.length} validated products in the latest export window.`}>
-      {merged.length === 0 ? (
-        <EmptyState>No validated products in the DB yet. Run the real QA pipeline to populate.</EmptyState>
+    <Layout title="Validated Products" subtitle={subtitle}>
+      {batchList.length === 0 && merged.length === 0 ? (
+        <EmptyState>
+          No real validated products in the DB yet.  Run <code>npm run run:real-qa</code> to produce a real export,
+          or <code>npm run backfill:exported-products -- --latest</code> to import an existing CSV.
+        </EmptyState>
       ) : (
         <div className="flex flex-col gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Export batch</CardTitle>
+              <CardSubtitle>
+                {batchList.length} {batchList.length === 1 ? 'batch' : 'batches'} available.
+                Defaulting to the most recent.
+              </CardSubtitle>
+            </CardHeader>
+            <CardBody>
+              <div className="flex flex-wrap gap-2 items-center">
+                <button
+                  key="latest"
+                  onClick={() => setSelectedBatch('')}
+                  className={
+                    'rounded border px-2.5 py-1 text-xs transition ' +
+                    (selectedBatch === ''
+                      ? 'border-brand text-brand bg-brand/10'
+                      : 'border-border text-muted hover:text-text hover:bg-panel2')
+                  }
+                >
+                  latest{latestBatchId ? ` (${latestBatchId.slice(0, 8)}…)` : ''}
+                </button>
+                {batchList.map((b) => (
+                  <button
+                    key={b.exportBatchId}
+                    onClick={() => setSelectedBatch(b.exportBatchId)}
+                    className={
+                      'rounded border px-2.5 py-1 text-xs transition ' +
+                      (selectedBatch === b.exportBatchId
+                        ? 'border-brand text-brand bg-brand/10'
+                        : 'border-border text-muted hover:text-text hover:bg-panel2')
+                    }
+                    title={`${b.exportBatchId} — ${b.rowCount} rows — ${fmtDate(b.latestExportedAt)}`}
+                  >
+                    {b.exportBatchId.slice(0, 8)}… <span className="text-muted">({b.rowCount})</span>
+                  </button>
+                ))}
+                <label className="flex items-center gap-2 text-xs text-muted ml-4">
+                  <input
+                    type="checkbox"
+                    checked={showSynthetic}
+                    onChange={(e) => {
+                      setShowSynthetic(e.target.checked);
+                      setSelectedBatch('');
+                    }}
+                  />
+                  show synthetic / test rows
+                </label>
+              </div>
+            </CardBody>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Filters</CardTitle>

@@ -68,6 +68,8 @@ function mockProduct(
 ): ValidatedProduct {
   return {
     otto_product_id: `OTTO-MOCK-${asin}`,
+    export_batch_id: 'mock-export-batch',
+    discovery_run_id: 'mock-run-id',
     asin,
     amazon_url: `https://www.amazon.com/dp/${asin}`,
     product_title: title,
@@ -93,6 +95,21 @@ function mockProduct(
     final_validation_score: final,
     validation_status: 'validated',
     validated_at: NOW,
+    raw_delivery_text: `FREE delivery in ${delivery} days`,
+    delivery_context: 'public_guest_zip',
+    prime_signal_detected: true,
+    prime_signal_source: 'prime_badge',
+    fba_signal_detected: false,
+    ships_from_amazon: false,
+    sold_by_amazon: false,
+    fulfilled_by_amazon: false,
+    shipping_gate_result: 'pass',
+    shipping_review_required: false,
+    business_fit_score: 80,
+    competition_quality_score: 70,
+    exported_at: NOW,
+    csv_export_path: 'exports/otto-validated-mock.csv',
+    is_synthetic: false,
   };
 }
 
@@ -186,6 +203,7 @@ export const export_batches: ExportBatch[] = [
     final_exported_after_dedupe: 9,
     status: 'completed',
     created_at: NOW,
+    is_synthetic: false,
   },
 ];
 

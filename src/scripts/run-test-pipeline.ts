@@ -223,6 +223,8 @@ async function main(): Promise<void> {
       edgeCaseRiskScore: complianceResult.data.edgeCaseRiskScore,
       fragilityScore: complianceResult.data.fragilityScore,
       variationConfusionScore: complianceResult.data.variationConfusionScore,
+      businessFitScore: businessFitResult.data.businessFitScore,
+      competitionQualityScore: businessFitResult.data.competitionQualityScore,
       totalCostEstimate: costResult.data.totalCostEstimate,
       predictedMonthlyProfitPer100Listings: 0,
       finalValidationScore: finalResult.data.finalValidationScore,
@@ -231,64 +233,13 @@ async function main(): Promise<void> {
     };
 
     validated.push(product);
-
-    try {
-      await supabase.from('validated_products').upsert(
-        {
-          otto_product_id: product.ottoProductId,
-          asin: product.asin,
-          amazon_url: product.amazonUrl,
-          product_title: product.productTitle,
-          brand: product.brand,
-          amazon_category: product.amazonCategory,
-          variation_attributes: product.variationAttributes ?? {},
-          amazon_price: product.amazonPrice,
-          coupon_detected: product.couponDetected,
-          delivery_days: product.deliveryDays,
-          stock_status: product.stockStatus,
-          rating: product.rating,
-          review_count: product.reviewCount,
-          source_confidence_score: product.sourceConfidenceScore,
-          product_match_type: product.productMatchType,
-          opportunity_type: product.opportunityType,
-          marketplace_signal_sources: product.marketplaceSignalSources,
-          primary_discovery_source: product.primaryDiscoverySource,
-          secondary_discovery_sources: product.secondaryDiscoverySources,
-          core_keyword: product.coreKeyword,
-          related_keywords: product.relatedKeywords,
-          ebay_category_hint: product.ebayCategoryHint,
-          demand_type: product.demandType,
-          sell_within_30_days_confidence: product.sellWithin30DaysConfidence,
-          stagnation_risk_score: product.stagnationRiskScore,
-          demand_score: product.demandScore,
-          category_velocity_score: product.categoryVelocityScore,
-          keyword_demand_score: product.keywordDemandScore,
-          competitor_success_score: product.competitorSuccessScore,
-          saturation_score: product.saturationScore,
-          trend_momentum_score: product.trendMomentumScore,
-          policy_risk_score: product.policyRiskScore,
-          vero_risk_score: product.veroRiskScore,
-          restricted_category_risk_score: product.restrictedCategoryRiskScore,
-          ip_risk_score: product.ipRiskScore,
-          edge_case_risk_score: product.edgeCaseRiskScore,
-          fragility_score: product.fragilityScore,
-          variation_confusion_score: product.variationConfusionScore,
-          total_cost_estimate: product.totalCostEstimate,
-          predicted_monthly_profit_per_100_listings: product.predictedMonthlyProfitPer100Listings,
-          final_validation_score: product.finalValidationScore,
-          validation_status: product.validationStatus,
-          validated_at: product.validatedAt,
-        },
-        { onConflict: 'otto_product_id' } as never,
-      );
-    } catch (err) {
-      log.warn('validated_products upsert failed', { err: (err as Error).message });
-    }
   }
 
-  // 8. Export
+  // 8. Export.  CsvExportAgent writes the canonical CSV, the manual QA
+  // CSV, and upserts kept products into validated_products.  isSynthetic
+  // marks these test-pipeline rows so the dashboard filters them out.
   const exporter = new CsvExportAgent();
-  const exportResult = await exporter.run({ products: validated, discoveryRunId: runId });
+  const exportResult = await exporter.run({ products: validated, discoveryRunId: runId, isSynthetic: true });
   stats.csvPath = exportResult.data.filePath;
 
   try {
