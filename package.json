@@ -25,7 +25,8 @@
     "audit:competition-gate": "ts-node -T -r tsconfig-paths/register src/scripts/audit-competition-gate.ts",
     "export:csv": "ts-node -T -r tsconfig-paths/register src/scripts/export-latest-csv.ts",
     "seed:rules": "ts-node -T -r tsconfig-paths/register src/scripts/seed-rules.ts",
-    "db:apply": "ts-node -T -r tsconfig-paths/register src/scripts/apply-schema.ts"
+    "db:apply": "ts-node -T -r tsconfig-paths/register src/scripts/apply-schema.ts",
+    "migrate:to-new-project": "ts-node -T -r tsconfig-paths/register src/scripts/migrate-to-new-project.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
