@@ -175,6 +175,22 @@ Keepa reports include `amazon_environment_status`, `proxy_enabled`,
 `preflight_performed`, and `preflight_result`; when a run is stopped at
 preflight the report states that no Keepa tokens were consumed.
 
+#### Runtime readiness & deployment
+
+```bash
+npm run doctor:runtime          # env + Supabase + eBay (live) + Amazon; Keepa key presence only
+npm run doctor:runtime -- --skip-amazon   # fast: env + connectivity only
+npm run preflight:production    # OK / NOT OK to run Keepa discovery
+```
+
+`doctor:runtime` prints `RUNTIME_READY_FOR_EBAY_QA`,
+`RUNTIME_READY_FOR_KEEPA_DISCOVERY`, and `RUNTIME_READY_FOR_DASHBOARD`
+(no secrets; consumes no Keepa tokens — Keepa is checked by key presence
+only). For choosing where to run OTTO jobs and a step-by-step bring-up,
+see **`OTTO_RUNTIME_DEPLOYMENT_PLAN.md`** and
+**`DEPLOYMENT_PREFLIGHT_CHECKLIST.md`**. Keepa scaling should wait until
+`test:amazon-environment` reports READY/PARTIAL in the target runtime.
+
 ### ASIN resolver smoke test
 
 ```bash

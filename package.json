@@ -19,6 +19,7 @@
     "test:amazon-environment": "ts-node -T -r tsconfig-paths/register src/scripts/test-amazon-environment.ts",
     "test:amazon-env-classifier": "ts-node -T -r tsconfig-paths/register src/scripts/test-amazon-environment.test.ts",
     "preflight:production": "ts-node -T -r tsconfig-paths/register src/scripts/preflight-production.ts",
+    "doctor:runtime": "ts-node -T -r tsconfig-paths/register src/scripts/doctor-runtime.ts",
     "test:ebay-demand": "ts-node -T -r tsconfig-paths/register src/scripts/test-ebay-demand.ts",
     "test:compliance": "ts-node -T -r tsconfig-paths/register src/scripts/test-compliance.ts",
     "test:shipping-gate": "ts-node -T -r tsconfig-paths/register src/scripts/test-shipping-gate.ts",
