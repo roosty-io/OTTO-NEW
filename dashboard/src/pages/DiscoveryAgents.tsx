@@ -16,8 +16,12 @@ export function DiscoveryAgents() {
   const partialCount = DISCOVERY_AGENTS.filter((a) => a.implemented === 'partial').length;
   const placeholderCount = DISCOVERY_AGENTS.filter((a) => a.implemented === 'placeholder').length;
 
+  const nextBuild = DISCOVERY_AGENTS
+    .filter((a) => a.priority !== null)
+    .sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
+
   const columns: DataColumn<DiscoveryAgentInfo>[] = [
-    { key: 'name', header: 'Agent', sortable: true, sortValue: (r) => r.name, cell: (r) => <span className="font-medium">{r.name}</span>, width: '20%' },
+    { key: 'name', header: 'Agent', sortable: true, sortValue: (r) => r.name, cell: (r) => <span className="font-medium">{r.name}</span>, width: '18%' },
     {
       key: 'implemented',
       header: 'Status',
@@ -25,11 +29,23 @@ export function DiscoveryAgents() {
       sortValue: (r) => r.implemented,
       cell: (r) => <Badge tone={TONE[r.implemented]}>{r.implemented}</Badge>,
     },
+    {
+      key: 'priority',
+      header: 'Next build',
+      sortable: true,
+      sortValue: (r) => r.priority ?? 99,
+      cell: (r) =>
+        r.implemented === 'real'
+          ? <Badge tone="good">live</Badge>
+          : r.priority !== null
+            ? <Badge tone={r.priority === 1 ? 'warn' : 'muted'}>priority {r.priority}</Badge>
+            : <span className="text-muted">—</span>,
+    },
     { key: 'dataSource', header: 'Data source', cell: (r) => <span className="text-muted">{r.dataSource}</span> },
     { key: 'requiresCredentials', header: 'Requires', cell: (r) => <span className="text-muted text-xs">{r.requiresCredentials}</span> },
     { key: 'testCommand', header: 'Test command', cell: (r) => r.testCommand ? <code className="text-xs font-mono">{r.testCommand}</code> : <span className="text-muted">—</span> },
     { key: 'lastSuccessfulRun', header: 'Last success', cell: (r) => <span className="text-muted text-xs">{r.lastSuccessfulRun ?? '—'}</span> },
-    { key: 'notes', header: 'Notes', cell: (r) => <span className="text-muted text-xs">{r.notes}</span>, width: '30%' },
+    { key: 'notes', header: 'Notes', cell: (r) => <span className="text-muted text-xs">{r.notes}</span>, width: '26%' },
   ];
 
   return (
@@ -42,6 +58,30 @@ export function DiscoveryAgents() {
         </div>
         <Card>
           <CardHeader>
+            <CardTitle>Status &amp; next implementation priority</CardTitle>
+            <CardSubtitle>
+              Only eBay Keyword Discovery is real today; every other agent is a placeholder.
+              Recommended build order (see DISCOVERY_EXPANSION_PLAN.md):
+            </CardSubtitle>
+          </CardHeader>
+          <CardBody>
+            <ol className="flex flex-col gap-1 text-sm">
+              {nextBuild.map((a) => (
+                <li key={a.name} className="flex items-center gap-2">
+                  <Badge tone={a.priority === 1 ? 'warn' : 'muted'}>priority {a.priority}</Badge>
+                  <span className="font-medium">{a.name}</span>
+                  <span className="text-muted text-xs">— {a.dataSource}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="text-muted text-xs mt-3">
+              Rationale: the top funnel loss is ASIN_NOT_RESOLVED (~60% of rejections), so ASIN-native
+              sources (Keepa, Amazon) that skip eBay→ASIN resolution come before eBay-native Zik.
+            </p>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardHeader>
             <CardTitle>Manifest</CardTitle>
             <CardSubtitle>This page is a static manifest in src/lib/discoveryAgents.ts; it does not query the DB.</CardSubtitle>
           </CardHeader>
@@ -51,7 +91,7 @@ export function DiscoveryAgents() {
               columns={columns}
               searchKeys={['name' as const, 'dataSource' as const, 'notes' as const]}
               searchPlaceholder="Search agent / data source..."
-              initialSort={{ key: 'implemented', ascending: true }}
+              initialSort={{ key: 'priority', ascending: true }}
             />
           </CardBody>
         </Card>
