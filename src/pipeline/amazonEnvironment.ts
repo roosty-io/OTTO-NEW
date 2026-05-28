@@ -10,7 +10,7 @@
  * support source validation — not that the product passes business gates.
  */
 
-import { getAmazonBrowserClient } from '@/clients/amazonBrowserClient';
+import { getAmazonBrowserClient, amazonProxyEffective } from '@/clients/amazonBrowserClient';
 import { env } from '@/config/env';
 import { logger } from '@/utils/logger';
 
@@ -79,8 +79,9 @@ export function maskProxyServer(raw: string | undefined): string | null {
 
 export function proxyDiagnostics(): ProxyDiagnostics {
   const server = env.amazon.proxyServer || env.amazon.proxy || '';
-  const enabled = Boolean(server);
-  return { enabled, serverMasked: enabled ? maskProxyServer(server) : null };
+  // Respect any per-run override (e.g. --no-proxy) via the client.
+  const enabled = amazonProxyEffective();
+  return { enabled, serverMasked: enabled && server ? maskProxyServer(server) : null };
 }
 
 /**
@@ -127,6 +128,7 @@ export function summarize(probes: AmazonProbeResult[]): Omit<AmazonEnvReport, 'p
 export interface ProbeOptions {
   asins?: string[];
   closeBrowser?: boolean;
+  zip?: string;
 }
 
 /**
@@ -142,7 +144,7 @@ export async function probeAmazonEnvironment(options: ProbeOptions = {}): Promis
   for (const asin of asins) {
     const url = `https://www.amazon.com/dp/${asin}`;
     try {
-      const page = await client.validateProductPage(asin, url);
+      const page = await client.validateProductPage(asin, url, options.zip ? { zipCode: options.zip } : undefined);
       const titleCaptured = Boolean(page.productTitle && page.productTitle.trim().length > 0);
       const priceCaptured = typeof page.price === 'number' && page.price > 0;
       const availabilityCaptured =
@@ -187,6 +189,32 @@ export async function probeAmazonEnvironment(options: ProbeOptions = {}): Promis
   }
 
   return { ...summarize(probes), proxy: proxyDiagnostics() };
+}
+
+/**
+ * Persist an environment check to amazon_environment_checks (best-effort).
+ * No secrets: proxy host is masked, password never stored.
+ */
+export async function persistAmazonEnvCheck(report: AmazonEnvReport, notes?: string): Promise<void> {
+  const timeoutCount = report.probes.filter((p) => p.validationErrorCode === 'TIMEOUT').length;
+  const navigationFailedCount = report.probes.filter((p) => p.validationErrorCode === 'NAVIGATION_FAILED').length;
+  try {
+    // Lazy import so the readiness check still works without Supabase wired.
+    const { getSupabase } = await import('@/clients/supabaseClient');
+    await getSupabase().from('amazon_environment_checks').insert({
+      status: report.status,
+      tested_asins: report.probes.map((p) => p.asin),
+      loaded_count: report.loaded,
+      blocked_count: report.blocked,
+      timeout_count: timeoutCount,
+      navigation_failed_count: navigationFailedCount,
+      proxy_enabled: report.proxy.enabled,
+      proxy_host_masked: report.proxy.serverMasked,
+      notes: notes ?? null,
+    });
+  } catch (err) {
+    log.warn('persistAmazonEnvCheck failed (non-fatal)', { err: (err as Error).message });
+  }
 }
 
 export interface PreflightDecision {

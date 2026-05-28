@@ -6,6 +6,7 @@ import type {
   AgentVote,
   AmazonSourceCheck,
   BusinessFitCheck,
+  AmazonEnvCheck,
   DiscoveryRun,
   ExportBatch,
   ExportExclusion,
@@ -366,6 +367,22 @@ export function useExportBatches(limit = 50) {
   return useQuery<ExportBatch[]>({
     queryKey: ['export_batches', limit],
     queryFn: () => fetchTable('export_batches', { order: { col: 'created_at', ascending: false }, limit }),
+  });
+}
+
+export function useLatestAmazonEnvCheck() {
+  return useQuery<AmazonEnvCheck | null>({
+    queryKey: ['amazon_environment_checks', 'latest'],
+    queryFn: async () => {
+      if (MOCK || !SUPABASE_CONFIGURED) return (mock.amazonEnvCheck ?? null) as AmazonEnvCheck | null;
+      const { data, error } = await supabase()
+        .from('amazon_environment_checks')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (error) throw new Error(`amazon_environment_checks: ${error.message}`);
+      return ((data ?? []) as AmazonEnvCheck[])[0] ?? null;
+    },
   });
 }
 

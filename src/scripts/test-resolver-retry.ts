@@ -114,6 +114,7 @@ class FakeAmazonClient implements AmazonBrowserClient {
   async resolveByTitle(): Promise<AmazonSearchHit | null> { return null; }
   async getProduct(): Promise<null> { return null; }
   async validateProductPage(): Promise<never> { throw new Error('unused'); }
+  async captureDiagnostics(): Promise<never> { throw new Error('unused'); }
   async close(): Promise<void> { return; }
 }
 

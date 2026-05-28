@@ -604,8 +604,26 @@ create table if not exists weekly_model_adjustments (
 );
 
 -- ---------------------------------------------------------------------
+-- Amazon environment readiness checks (no secrets stored)
+-- ---------------------------------------------------------------------
+create table if not exists amazon_environment_checks (
+  id uuid primary key default gen_random_uuid(),
+  status text not null,
+  tested_asins text[] not null default '{}',
+  loaded_count int not null default 0,
+  blocked_count int not null default 0,
+  timeout_count int not null default 0,
+  navigation_failed_count int not null default 0,
+  proxy_enabled boolean not null default false,
+  proxy_host_masked text,
+  created_at timestamptz not null default now(),
+  notes text
+);
+
+-- ---------------------------------------------------------------------
 -- Helpful indexes
 -- ---------------------------------------------------------------------
+create index if not exists idx_amazon_env_checks_created on amazon_environment_checks(created_at desc);
 create index if not exists idx_raw_candidates_run on raw_candidates(discovery_run_id);
 create index if not exists idx_agent_logs_product on agent_logs(otto_product_id);
 create index if not exists idx_agent_logs_run on agent_logs(discovery_run_id);

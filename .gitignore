@@ -12,3 +12,4 @@ dashboard/tsconfig.tsbuildinfo
 .idea
 .vscode
 coverage
+reports/amazon-env-diagnostics/

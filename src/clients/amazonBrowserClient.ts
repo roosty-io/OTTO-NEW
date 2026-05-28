@@ -142,6 +142,12 @@ export interface AmazonBrowserClient {
     amazonUrl: string,
     options?: { zipCode?: string },
   ): Promise<AmazonProductPageData>;
+  /** Navigate a PDP and capture raw diagnostics (screenshot/html/finalUrl/ua). */
+  captureDiagnostics(
+    asin: string,
+    amazonUrl: string,
+    options?: { zipCode?: string },
+  ): Promise<AmazonPageDiagnostics>;
   close(): Promise<void>;
 }
 
@@ -240,6 +246,20 @@ class MockAmazonBrowserClient implements AmazonBrowserClient {
       fulfilledByAmazon: true,
     };
   }
+  async captureDiagnostics(asin: string, amazonUrl: string): Promise<AmazonPageDiagnostics> {
+    return {
+      asin,
+      requestedUrl: amazonUrl,
+      finalUrl: amazonUrl,
+      userAgent: 'mock-user-agent',
+      viewport: { width: 1366, height: 900 },
+      proxyEnabled: false,
+      pageLoaded: true,
+      blockedOrCaptcha: false,
+      networkErrors: [],
+      html: '<html><body>mock</body></html>',
+    };
+  }
   async close(): Promise<void> {
     return;
   }
@@ -285,6 +305,43 @@ interface PwPage {
   $eval<T>(selector: string, fn: (el: unknown) => T): Promise<T>;
 }
 
+// Per-run launch overrides for diagnostics / readiness probes.  Must be
+// set BEFORE the browser launches lazily (the readiness script does this).
+export interface AmazonBrowserOverrides {
+  headless?: boolean;
+  debug?: boolean;
+  disableProxy?: boolean;
+}
+let _amazonOverrides: AmazonBrowserOverrides = {};
+export function setAmazonBrowserOverrides(o: AmazonBrowserOverrides): void {
+  _amazonOverrides = { ..._amazonOverrides, ...o };
+}
+export function resetAmazonBrowserOverrides(): void {
+  _amazonOverrides = {};
+}
+/** Effective proxy state given env + per-run overrides. No secrets. */
+export function amazonProxyEffective(): boolean {
+  if (_amazonOverrides.disableProxy) return false;
+  return Boolean(env.amazon.proxyServer || env.amazon.proxy);
+}
+
+export interface AmazonPageDiagnostics {
+  asin: string;
+  requestedUrl: string;
+  finalUrl?: string;
+  userAgent: string;
+  viewport: { width: number; height: number };
+  proxyEnabled: boolean;
+  pageLoaded: boolean;
+  blockedOrCaptcha: boolean;
+  validationErrorCode?: ValidationErrorCode;
+  networkErrors: string[];
+  /** PNG screenshot bytes (best-effort; may be undefined if capture failed). */
+  screenshot?: Buffer;
+  /** Raw page HTML (caller is responsible for any redaction before saving). */
+  html?: string;
+}
+
 class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
   readonly isImplemented = true;
   private readonly log = logger.child('amazonBrowserClient');
@@ -292,15 +349,21 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
   private launchAttempted = false;
   private launchError: string | null = null;
 
+  private get debugEffective(): boolean {
+    return _amazonOverrides.debug ?? env.amazon.debug;
+  }
+
   private get headless(): boolean {
-    return env.amazon.debug ? false : env.amazon.headless;
+    if (typeof _amazonOverrides.headless === 'boolean') return _amazonOverrides.headless;
+    return this.debugEffective ? false : env.amazon.headless;
   }
 
   private get slowMo(): number | undefined {
-    return env.amazon.debug ? 250 : undefined;
+    return this.debugEffective ? 250 : undefined;
   }
 
   private get proxyConfig(): { server: string; username?: string; password?: string } | undefined {
+    if (_amazonOverrides.disableProxy) return undefined;
     if (env.amazon.proxyServer) {
       return {
         server: env.amazon.proxyServer,
@@ -757,6 +820,97 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
     }
   }
 
+  async captureDiagnostics(
+    asin: string,
+    amazonUrl: string,
+    _options?: { zipCode?: string },
+  ): Promise<AmazonPageDiagnostics> {
+    const canonicalUrl = amazonUrl || amazonUrlFromAsin(asin);
+    const userAgent =
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+      'Chrome/124.0.0.0 Safari/537.36';
+    const viewport = { width: 1366, height: 900 };
+    const proxyEnabled = amazonProxyEffective();
+    const networkErrors: string[] = [];
+    const base: AmazonPageDiagnostics = {
+      asin,
+      requestedUrl: canonicalUrl,
+      userAgent,
+      viewport,
+      proxyEnabled,
+      pageLoaded: false,
+      blockedOrCaptcha: false,
+      networkErrors,
+    };
+
+    const browser = await this.ensureBrowser();
+    if (!browser) {
+      return { ...base, validationErrorCode: 'BROWSER_LAUNCH_FAILED' };
+    }
+
+    const timeoutMs = env.amazon.searchTimeoutMs;
+    let context: PwContext | null = null;
+    let page: PwPage | null = null;
+    try {
+      context = await browser.newContext({
+        userAgent,
+        locale: 'en-US',
+        viewport,
+        ignoreHTTPSErrors: env.amazon.ignoreHttpsErrors,
+      });
+      page = await context.newPage();
+      // Record failed network requests (URL + error text only; no bodies/cookies).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (page as any).on('requestfailed', (req: unknown) => {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const r = req as any;
+          const failure = r.failure?.();
+          networkErrors.push(`${r.method?.() ?? ''} ${redactUrl(r.url?.() ?? '')} -- ${failure?.errorText ?? 'failed'}`.trim());
+        } catch { /* ignore */ }
+      });
+
+      let navError: ValidationErrorCode | undefined;
+      try {
+        await page.goto(canonicalUrl, { timeout: timeoutMs, waitUntil: 'domcontentloaded' });
+      } catch (err) {
+        const msg = (err as Error).message;
+        navError = /timeout/i.test(msg) ? 'TIMEOUT' : 'NAVIGATION_FAILED';
+      }
+
+      let html: string | undefined;
+      let finalUrl: string | undefined;
+      try { finalUrl = redactUrl(page.url()); } catch { /* ignore */ }
+      try { html = await page.content(); } catch { /* ignore */ }
+
+      let screenshot: Buffer | undefined;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        screenshot = (await (page as any).screenshot({ fullPage: false })) as Buffer;
+      } catch { /* ignore */ }
+
+      const blocked = html ? looksBlocked(html, finalUrl ?? canonicalUrl) : false;
+      const pageLoaded = !navError && Boolean(html);
+      const validationErrorCode = navError ?? (blocked ? 'BLOCKED_OR_CAPTCHA' : undefined);
+
+      return {
+        ...base,
+        finalUrl,
+        pageLoaded,
+        blockedOrCaptcha: blocked,
+        validationErrorCode,
+        networkErrors: networkErrors.slice(0, 50),
+        screenshot,
+        html,
+      };
+    } catch (err) {
+      return { ...base, validationErrorCode: 'PARSE_FAILED', networkErrors: [`exception: ${(err as Error).message}`] };
+    } finally {
+      try { if (page) await page.close(); } catch { /* ignore */ }
+      try { if (context) await context.close(); } catch { /* ignore */ }
+    }
+  }
+
   private async extractProductPage(page: PwPage): Promise<{
     productTitle: string | null;
     brand: string | null;
@@ -978,6 +1132,19 @@ class PlaywrightAmazonBrowserClient implements AmazonBrowserClient {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Strip query string / fragment from a URL so saved diagnostics never
+ *  contain tokens, session ids, or proxy creds embedded in URLs. */
+function redactUrl(raw: string): string {
+  if (!raw) return raw;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return raw; // e.g. about:blank
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return raw.split('?')[0].split('#')[0];
+  }
+}
 
 function looksBlocked(html: string, currentUrl: string): boolean {
   if (!html) return false;

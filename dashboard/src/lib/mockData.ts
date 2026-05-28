@@ -3,6 +3,7 @@
 // can be exercised offline.
 
 import type {
+  AmazonEnvCheck,
   AgentLog,
   AmazonSourceCheck,
   BusinessFitCheck,
@@ -280,3 +281,17 @@ function log(agent: string, level: string, message: string): AgentLog {
     created_at: NOW,
   };
 }
+
+export const amazonEnvCheck: AmazonEnvCheck = {
+  id: 'mock-env-check',
+  status: 'AMAZON_ENV_READY',
+  tested_asins: ['B0BCJQ31XZ', 'B0B6RCKQBS', 'B0DZC7TZNL', 'B0FK3K1228', 'B098QQ2B4B'],
+  loaded_count: 5,
+  blocked_count: 0,
+  timeout_count: 0,
+  navigation_failed_count: 0,
+  proxy_enabled: false,
+  proxy_host_masked: null,
+  created_at: NOW,
+  notes: 'mock',
+};

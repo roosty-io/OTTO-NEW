@@ -222,6 +222,20 @@ export interface LatestRun {
   };
 }
 
+export interface AmazonEnvCheck {
+  id: string;
+  status: string;
+  tested_asins: string[] | null;
+  loaded_count: number;
+  blocked_count: number;
+  timeout_count: number;
+  navigation_failed_count: number;
+  proxy_enabled: boolean;
+  proxy_host_masked: string | null;
+  created_at: string;
+  notes: string | null;
+}
+
 export interface ExportExclusion {
   id: string;
   export_batch_id: string | null;

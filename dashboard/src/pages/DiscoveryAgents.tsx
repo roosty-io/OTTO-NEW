@@ -3,6 +3,8 @@ import { DataTable, type DataColumn } from '@/components/ui/DataTable';
 import { Badge } from '@/components/ui/Badge';
 import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from '@/components/ui/Card';
 import { Scorecard } from '@/components/Scorecard';
+import { useLatestAmazonEnvCheck } from '@/lib/queries';
+import { fmtDate } from '@/lib/utils';
 import { DISCOVERY_AGENTS, KEEPA_PROFILES, type DiscoveryAgentInfo, type ImplementedStatus } from '@/lib/discoveryAgents';
 
 const TONE: Record<ImplementedStatus, 'good' | 'warn' | 'muted'> = {
@@ -10,6 +12,54 @@ const TONE: Record<ImplementedStatus, 'good' | 'warn' | 'muted'> = {
   partial: 'warn',
   placeholder: 'muted',
 };
+
+const ENV_TONE: Record<string, 'good' | 'warn' | 'bad' | 'muted'> = {
+  AMAZON_ENV_READY: 'good',
+  AMAZON_ENV_PARTIAL: 'warn',
+  AMAZON_ENV_BLOCKED: 'bad',
+  AMAZON_ENV_UNUSABLE: 'bad',
+};
+
+function AmazonEnvCard() {
+  const { data, isLoading } = useLatestAmazonEnvCheck();
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Amazon environment</CardTitle>
+        <CardSubtitle>
+          Latest <code className="font-mono">npm run test:amazon-environment</code> result. Keepa discovery should
+          only run at scale when this is READY or PARTIAL.
+        </CardSubtitle>
+      </CardHeader>
+      <CardBody>
+        {isLoading ? (
+          <span className="text-muted text-sm">Loading…</span>
+        ) : !data ? (
+          <span className="text-muted text-sm">
+            No environment check recorded yet. Run <code className="font-mono">npm run test:amazon-environment</code>.
+          </span>
+        ) : (
+          <div className="flex flex-col gap-2 text-sm">
+            <div className="flex items-center gap-2">
+              <Badge tone={ENV_TONE[data.status] ?? 'muted'}>{data.status}</Badge>
+              <span className="text-muted text-xs">{fmtDate(data.created_at)}</span>
+            </div>
+            <div className="text-muted text-xs">
+              loaded {data.loaded_count}/{(data.tested_asins ?? []).length} · blocked {data.blocked_count} · timeout {data.timeout_count} · nav-failed {data.navigation_failed_count} ·
+              proxy {data.proxy_enabled ? `enabled${data.proxy_host_masked ? ` (${data.proxy_host_masked})` : ''}` : 'disabled'}
+            </div>
+            {(data.status === 'AMAZON_ENV_BLOCKED' || data.status === 'AMAZON_ENV_UNUSABLE') && (
+              <div className="text-xs text-red-300">
+                Amazon source validation will fail here — configure AMAZON_PROXY_SERVER or run where Amazon is reachable.
+                See AMAZON_ACCESS_RUNBOOK.md.
+              </div>
+            )}
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
 
 export function DiscoveryAgents() {
   const realCount = DISCOVERY_AGENTS.filter((a) => a.implemented === 'real').length;
@@ -56,6 +106,7 @@ export function DiscoveryAgents() {
           <Scorecard label="Partial" value={partialCount} tone="warn" />
           <Scorecard label="Placeholder" value={placeholderCount} tone="default" />
         </div>
+        <AmazonEnvCard />
         <Card>
           <CardHeader>
             <CardTitle>Status &amp; next implementation priority</CardTitle>
