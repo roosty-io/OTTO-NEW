@@ -36,6 +36,16 @@ export const env = {
   },
   keepa: {
     apiKey: str('KEEPA_API_KEY'),
+    // Discovery (Keepa Rank Movement) tuning.
+    domain: num('KEEPA_DOMAIN', 1), // 1 = amazon.com
+    discoveryMaxAsins: num('KEEPA_DISCOVERY_MAX_ASINS', 100),
+    discoveryMinRankImprovementPercent: num('KEEPA_DISCOVERY_MIN_RANK_IMPROVEMENT_PERCENT', 20),
+    discoveryMinAvgRank30d: num('KEEPA_DISCOVERY_MIN_AVG_RANK_30D', 0), // 0 = no floor
+    discoveryMaxSalesRank: num('KEEPA_DISCOVERY_MAX_SALES_RANK', 0), // 0 = no ceiling
+    discoveryAllowedCategories: str('KEEPA_DISCOVERY_ALLOWED_CATEGORIES'), // blank = built-in V1 safe set
+    discoveryExcludedCategories: str('KEEPA_DISCOVERY_EXCLUDED_CATEGORIES'),
+    discoveryMinAmazonPrice: num('KEEPA_DISCOVERY_MIN_AMAZON_PRICE', 10),
+    discoveryMaxAmazonPrice: num('KEEPA_DISCOVERY_MAX_AMAZON_PRICE', 150),
   },
   amazon: {
     // Legacy combined proxy URL (kept for back-compat with V1.0 env files).

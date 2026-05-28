@@ -59,6 +59,36 @@ npm run test:real-ebay -- "stainless lazy susan" "bamboo drawer divider" --limit
 - Exits with code `2` if `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` (or
   `EBAY_OAUTH_TOKEN`) are missing.
 
+### Keepa rank-movement discovery (ASIN-native)
+
+`KeepaRankMovementDiscoveryAgent` discovers Amazon products with
+**improving sales rank** directly from Keepa, so candidates arrive with a
+confirmed ASIN and **bypass the eBay→ASIN resolver** (the dominant funnel
+loss). They then run through the exact same validation chain as real QA
+(Amazon source → demand → compliance → business fit → cost → final →
+same-batch dedupe → cross-batch filter → CSV + manual QA + persistence).
+
+```bash
+npm run run:keepa-discovery -- --limit=25
+npm run run:keepa-discovery -- --limit=25 --category="Home & Kitchen"
+npm run run:keepa-discovery -- --limit=25 --min-price=12 --max-price=120
+npm run run:keepa-discovery -- --limit=25 --allow-repeats
+npm run run:keepa-discovery -- --repeat-policy=never_repeat
+```
+
+- Targets safer V1 categories only (Home & Kitchen, Tools & Home
+  Improvement, Patio/Lawn/Garden, Office Products, Arts/Crafts/Sewing,
+  Pet Supplies — excluding ingestibles/medical/supplements, plus a
+  defense-in-depth title/category exclusion filter). Tunable via
+  `KEEPA_DISCOVERY_*` env vars.
+- **No fake data in real mode.** If the Keepa account/plan lacks the
+  Product Finder endpoint, the run reports `KEEPA_PLAN_LIMITATION` /
+  `KEEPA_ENDPOINT_UNAVAILABLE` and produces zero candidates rather than
+  inventing any.
+- Persists exported products to `validated_products` with
+  `primary_discovery_source = keepa_rank_movement`.
+- Unit tests: `npm run test:keepa-discovery`.
+
 ### ASIN resolver smoke test
 
 ```bash

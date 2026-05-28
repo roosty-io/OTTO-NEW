@@ -129,6 +129,19 @@ export function ValidatedProducts() {
       sortValue: (r) => r.brand ?? '',
       cell: (r) => <span className="text-muted">{r.brand ?? '—'}</span>,
     },
+    {
+      key: 'primary_discovery_source',
+      header: 'Source',
+      sortable: true,
+      sortValue: (r) => r.primary_discovery_source ?? '',
+      cell: (r) => {
+        const src = r.primary_discovery_source;
+        if (!src) return <span className="text-muted">—</span>;
+        const tone = src === 'keepa_rank_movement' ? 'good' : 'muted';
+        const label = src === 'keepa_rank_movement' ? 'keepa' : src === 'ebay_browse_api' ? 'ebay' : src;
+        return <Badge tone={tone}>{label}</Badge>;
+      },
+    },
     { key: 'amazon_price', header: 'Price', sortable: true, sortValue: (r) => r.amazon_price, cell: (r) => fmtMoney(r.amazon_price), className: 'text-right tabular-nums' },
     { key: 'delivery_days', header: 'Delivery', sortable: true, sortValue: (r) => r.delivery_days ?? null, cell: (r) => `${fmtNum(r.delivery_days)}d`, className: 'text-right tabular-nums' },
     {

@@ -21,6 +21,11 @@ export interface ProductCandidate {
   imageUrlHint?: string;
   priceHint?: number;
   discoveryScore: number;
+  // ASIN-native discovery (e.g. Keepa): when present, the ASIN resolver
+  // can be bypassed and source confidence treated as high.
+  asin?: string;
+  amazonUrl?: string;
+  sourceConfidenceScore?: number;
 }
 
 export interface ValidatedProduct {

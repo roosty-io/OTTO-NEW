@@ -2,14 +2,17 @@
 
 _Audit date: 2026-05-28. Branch: `claude/keen-meitner-FT8xt`._
 
-This is an **audit + planning** document. No discovery agents were
-implemented or changed in this pass.
+_Update 2026-05-28: **Keepa Rank Movement Discovery is now implemented**
+(`npm run run:keepa-discovery`) — the first ASIN-native discovery source.
+See `DISCOVERY_EXPANSION_PLAN.md` for the build it came from._
 
 ## TL;DR
 
-- **Only `eBay Keyword Discovery` is real.** It is the sole discovery
-  source active in `npm run run:real-qa` today.
-- **Everything else is a placeholder.** Some have partially-real
+- **Real discovery sources: `eBay Keyword Discovery` and
+  `Keepa Rank Movement`.** eBay runs in `npm run run:real-qa`; Keepa
+  runs in `npm run run:keepa-discovery` (ASIN-native — bypasses the
+  resolver bottleneck).
+- **The rest are placeholders.** Some have partially-real
   *clients* (Keepa API, Amazon Playwright) but **no discovery agent**
   wired to them.
 - The next bottleneck is candidate **volume + diversity**, and the
@@ -39,7 +42,7 @@ implemented or changed in this pass.
 | Zik Category Discovery | placeholder | Zik Analytics (browser) | `ZIK_USERNAME`+`ZIK_PASSWORD` | client only: `zikBrowserClient.ts` (`getCategoryStats`) | `source_signals` / `category_performance_scores` | none | No | high | medium |
 | Zik Sell-Through Discovery | placeholder | Zik Analytics (browser) | `ZIK_USERNAME`+`ZIK_PASSWORD` | none | `source_signals` (enriches `ebay_demand_checks`) | none | No | high | medium |
 | Zik Saturation Discovery | placeholder | Zik Analytics (browser) | `ZIK_USERNAME`+`ZIK_PASSWORD` | none | `source_signals` (feeds competition gate) | none | No | high | medium |
-| Keepa Rank Movement | placeholder (client **partial**) | Keepa API | `KEEPA_API_KEY` | client: `src/clients/keepaClient.ts` (`getProduct` real); no agent | `raw_candidates` (ASIN-native) | none | No | medium | **high** |
+| Keepa Rank Movement | **real** | Keepa API (`/query` + `/product`) | `KEEPA_API_KEY` (+ eBay for demand) | `src/agents/discovery/KeepaRankMovementDiscoveryAgent.ts` | `raw_candidates` + `product_opportunities` (ASIN-native) | `npm run test:keepa-discovery` / `npm run run:keepa-discovery` | **Yes** (`run:keepa-discovery`) | medium (done) | **high** |
 | Keepa Price Stability | placeholder (client **partial**) | Keepa API | `KEEPA_API_KEY` | client: `keepaClient.ts`; no agent | `source_signals` (enriches BusinessFit) | none | No | medium | medium |
 | Amazon Best Sellers | placeholder (infra **real**) | Amazon Best Sellers pages | Playwright browser, **no Amazon login** | infra: `src/clients/amazonBrowserClient.ts` (real); no agent | `raw_candidates` (ASIN-native) | none | No | medium | **high** |
 | Amazon Movers | placeholder (infra **real**) | Amazon Movers & Shakers | Playwright browser, no login | infra: `amazonBrowserClient.ts`; no agent | `raw_candidates` (ASIN-native) | none | No | medium | medium-high |

@@ -60,8 +60,8 @@ export function DiscoveryAgents() {
           <CardHeader>
             <CardTitle>Status &amp; next implementation priority</CardTitle>
             <CardSubtitle>
-              Only eBay Keyword Discovery is real today; every other agent is a placeholder.
-              Recommended build order (see DISCOVERY_EXPANSION_PLAN.md):
+              Real today: eBay Keyword Discovery + Keepa Rank Movement (ASIN-native).
+              Recommended next build order (see DISCOVERY_EXPANSION_PLAN.md):
             </CardSubtitle>
           </CardHeader>
           <CardBody>
