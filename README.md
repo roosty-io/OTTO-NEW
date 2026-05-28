@@ -69,25 +69,58 @@ loss). They then run through the exact same validation chain as real QA
 same-batch dedupe → cross-batch filter → CSV + manual QA + persistence).
 
 ```bash
-npm run run:keepa-discovery -- --limit=25
-npm run run:keepa-discovery -- --limit=25 --category="Home & Kitchen"
-npm run run:keepa-discovery -- --limit=25 --min-price=12 --max-price=120
-npm run run:keepa-discovery -- --limit=25 --allow-repeats
+# Calibration profiles (strict / balanced / broad / exploratory)
+npm run run:keepa-discovery -- --profile=balanced --limit=25
+npm run run:keepa-discovery -- --profile=broad --limit=25
+# Explicit overrides (win over the profile)
+npm run run:keepa-discovery -- --min-rank-improvement=8 --min-price=12 --max-price=120
+npm run run:keepa-discovery -- --category="Home & Kitchen" --allow-repeats
 npm run run:keepa-discovery -- --repeat-policy=never_repeat
 ```
+
+Profiles (tune **discovery input only** — validation gates are unchanged):
+
+| Profile | min rank improvement | price band | use |
+| --- | --- | --- | --- |
+| `strict` | 20% | $12–$150 | tightest |
+| `balanced` | 10% | $10–$150 | recommended default |
+| `broad` | 5% | $10–$200 | leans on downstream gates |
+| `exploratory` | 0% | $5–$300 | diagnostics only, not for default exports |
 
 - Targets safer V1 categories only (Home & Kitchen, Tools & Home
   Improvement, Patio/Lawn/Garden, Office Products, Arts/Crafts/Sewing,
   Pet Supplies — excluding ingestibles/medical/supplements, plus a
   defense-in-depth title/category exclusion filter). Tunable via
   `KEEPA_DISCOVERY_*` env vars.
+- **Sales-rank ceiling** `KEEPA_DISCOVERY_MAX_SALES_RANK` (default 150000)
+  stops the Keepa Product Finder from returning dead, multi-million-rank
+  products — the key calibration lever (without it, discovery returned
+  11M-rank junk).
 - **No fake data in real mode.** If the Keepa account/plan lacks the
   Product Finder endpoint, the run reports `KEEPA_PLAN_LIMITATION` /
   `KEEPA_ENDPOINT_UNAVAILABLE` and produces zero candidates rather than
   inventing any.
+- Filter losses are reported with reason codes
+  (`KEEPA_RANK_IMPROVEMENT_TOO_LOW`, `KEEPA_CATEGORY_EXCLUDED`,
+  `KEEPA_PRICE_TOO_LOW`/`_HIGH`, `KEEPA_MISSING_ASIN`/`_TITLE`/`_PRICE`,
+  `KEEPA_UNSUPPORTED_CATEGORY`).
 - Persists exported products to `validated_products` with
   `primary_discovery_source = keepa_rank_movement`.
 - Unit tests: `npm run test:keepa-discovery`.
+
+#### Keepa calibration
+
+```bash
+npm run calibrate:keepa-discovery -- --limit=25     # runs strict -> balanced -> broad
+npm run calibrate:keepa-discovery -- --limit=10     # cheaper token cost first
+```
+
+Runs each profile through the full validation chain and writes a
+side-by-side comparison to `reports/otto-keepa-calibration-<timestamp>.md`
+with per-profile Keepa token usage, raw products, filter-loss reason
+codes, funnel counts, and Amazon source-validation failure diagnostics
+(reason, page-loaded, price, buyable, stock, delivery gate, restricted
+signals). It prints a rough Keepa token estimate before running.
 
 ### ASIN resolver smoke test
 

@@ -3,7 +3,7 @@ import { DataTable, type DataColumn } from '@/components/ui/DataTable';
 import { Badge } from '@/components/ui/Badge';
 import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from '@/components/ui/Card';
 import { Scorecard } from '@/components/Scorecard';
-import { DISCOVERY_AGENTS, type DiscoveryAgentInfo, type ImplementedStatus } from '@/lib/discoveryAgents';
+import { DISCOVERY_AGENTS, KEEPA_PROFILES, type DiscoveryAgentInfo, type ImplementedStatus } from '@/lib/discoveryAgents';
 
 const TONE: Record<ImplementedStatus, 'good' | 'warn' | 'muted'> = {
   real: 'good',
@@ -77,6 +77,32 @@ export function DiscoveryAgents() {
             <p className="text-muted text-xs mt-3">
               Rationale: the top funnel loss is ASIN_NOT_RESOLVED (~60% of rejections), so ASIN-native
               sources (Keepa, Amazon) that skip eBay→ASIN resolution come before eBay-native Zik.
+            </p>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>Keepa discovery calibration</CardTitle>
+            <CardSubtitle>
+              Keepa Rank Movement supports calibration profiles (discovery input only — validation gates unchanged).
+            </CardSubtitle>
+          </CardHeader>
+          <CardBody>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
+              {KEEPA_PROFILES.map((p) => (
+                <div key={p.name} className="flex items-start gap-2">
+                  <Badge tone={p.diagnosticsOnly ? 'muted' : 'good'}>{p.name}</Badge>
+                  <span className="text-muted text-xs">
+                    rank ≥ {p.minRankImprovementPercent}% · ${p.minAmazonPrice}–${p.maxAmazonPrice}
+                    {p.diagnosticsOnly ? ' · diagnostics only' : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p className="text-muted text-xs mt-3">
+              Calibrate: <code className="font-mono">npm run calibrate:keepa-discovery -- --limit=25</code>.
+              Reports saved to <code className="font-mono">reports/otto-keepa-calibration-&lt;timestamp&gt;.md</code>.
+              Filter losses are reported with <code className="font-mono">KEEPA_*</code> reason codes.
             </p>
           </CardBody>
         </Card>

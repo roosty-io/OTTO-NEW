@@ -10,11 +10,8 @@ import {
 import { getSupabase } from '@/clients/supabaseClient';
 import { logger } from '@/utils/logger';
 import { persistAgentLog } from '@/agents/baseAgent';
-import {
-  isCategoryAllowed,
-  resolveCategoryTargets,
-  type AllowedCategory,
-} from '@/utils/keepaCategories';
+import { resolveCategoryTargets, type AllowedCategory } from '@/utils/keepaCategories';
+import { classifyKeepaCandidate, KeepaFilterReason } from '@/agents/discovery/keepaFilters';
 import { env } from '@/config/env';
 import type { ProductCandidate } from '@/types/product';
 
@@ -48,6 +45,8 @@ export interface KeepaDiscoveryOutput {
   error?: KeepaError;
   rawCandidateCount: number;
   asinNativeCount: number;
+  /** Diagnostic counts keyed by KeepaFilterReason code. */
+  filterReasons: Record<string, number>;
 }
 
 export class KeepaRankMovementDiscoveryAgent {
@@ -56,7 +55,6 @@ export class KeepaRankMovementDiscoveryAgent {
 
   async run(input: KeepaDiscoveryInput): Promise<KeepaDiscoveryOutput> {
     const keepa = getKeepaClient();
-    const supabase = getSupabase();
 
     const maxAsins = input.maxAsins ?? env.keepa.discoveryMaxAsins;
     const minPrice = input.minAmazonPrice ?? env.keepa.discoveryMinAmazonPrice;
@@ -72,6 +70,10 @@ export class KeepaRankMovementDiscoveryAgent {
 
     const candidates: ProductCandidate[] = [];
     const perCategory: KeepaCategoryStat[] = [];
+    const filterReasons: Record<string, number> = {};
+    const bumpReason = (code: string) => {
+      filterReasons[code] = (filterReasons[code] ?? 0) + 1;
+    };
     let tokens: KeepaTokenInfo = {};
     let firstError: KeepaError | undefined;
     let rawCandidateCount = 0;
@@ -132,33 +134,39 @@ export class KeepaRankMovementDiscoveryAgent {
         rawCandidateCount++;
         stat.rawAsins++;
         const norm = normalizeKeepaProduct(product.raw);
-        if (!norm || !norm.asin) {
-          stat.filteredNoAsin++;
-          continue;
-        }
-        if (!isCategoryAllowed(norm.amazonCategory, norm.title, env.keepa.discoveryExcludedCategories)) {
-          stat.filteredCategory++;
-          continue;
-        }
-        if (
-          minRankImprovement > 0 &&
-          typeof norm.rankImprovement30d === 'number' &&
-          norm.rankImprovement30d < minRankImprovement
-        ) {
-          stat.filteredRankImprovement++;
-          continue;
-        }
-        if (typeof norm.amazonPrice === 'number') {
-          if (norm.amazonPrice < minPrice || norm.amazonPrice > maxPrice) {
-            stat.filteredPrice++;
-            continue;
+        const decision = classifyKeepaCandidate(norm, {
+          minRankImprovementPercent: minRankImprovement,
+          minAmazonPrice: minPrice,
+          maxAmazonPrice: maxPrice,
+          excludedCategoriesCsv: env.keepa.discoveryExcludedCategories,
+        });
+        if (!decision.accepted) {
+          bumpReason(decision.reason ?? 'KEEPA_UNKNOWN');
+          switch (decision.reason) {
+            case KeepaFilterReason.KEEPA_MISSING_ASIN:
+            case KeepaFilterReason.KEEPA_MISSING_TITLE:
+              stat.filteredNoAsin++;
+              break;
+            case KeepaFilterReason.KEEPA_CATEGORY_EXCLUDED:
+            case KeepaFilterReason.KEEPA_UNSUPPORTED_CATEGORY:
+              stat.filteredCategory++;
+              break;
+            case KeepaFilterReason.KEEPA_RANK_IMPROVEMENT_TOO_LOW:
+              stat.filteredRankImprovement++;
+              break;
+            case KeepaFilterReason.KEEPA_PRICE_TOO_LOW:
+            case KeepaFilterReason.KEEPA_PRICE_TOO_HIGH:
+            case KeepaFilterReason.KEEPA_MISSING_PRICE:
+              stat.filteredPrice++;
+              break;
           }
+          continue;
         }
 
-        const candidate = this.toCandidate(norm, target);
+        const candidate = this.toCandidate(norm!, target);
         candidates.push(candidate);
         stat.accepted++;
-        await this.persist(candidate, norm, input.discoveryRunId, product.raw);
+        await this.persist(candidate, norm!, input.discoveryRunId, product.raw);
         if (candidates.length >= maxAsins) break;
       }
 
@@ -169,6 +177,7 @@ export class KeepaRankMovementDiscoveryAgent {
       candidates,
       perCategory,
       tokens,
+      filterReasons,
       error: candidates.length === 0 ? firstError : undefined,
       rawCandidateCount,
       asinNativeCount: candidates.length,

@@ -189,9 +189,13 @@ export class KeepaClient {
       productType: [0, 1], // standard + variation parent
       perPage,
       page: 0,
-      sort: [['delta30_SALES', 'asc']],
-      delta30_SALES_lte: -1, // rank improved at all over 30d
+      sort: [['salesRankDrops30', 'desc']], // most 30-day rank improvements first
+      // Require a live, non-trivial sales rank so we don't fetch dead products.
+      current_SALES_gte: 1,
+      salesRankDrops30_gte: 1, // had at least one rank improvement in 30 days
     };
+    // Sales-rank ceiling: critical — without it the Finder returns
+    // multi-million-rank dead products.  Defaults applied by the agent/env.
     if (input.maxSalesRank && input.maxSalesRank > 0) {
       selection.current_SALES_lte = input.maxSalesRank;
     }

@@ -6,6 +6,22 @@
 
 export type ImplementedStatus = 'real' | 'partial' | 'placeholder';
 
+// Mirrors src/config/keepaProfiles.ts (backend) for display only.
+export interface KeepaProfileInfo {
+  name: string;
+  minRankImprovementPercent: number;
+  minAmazonPrice: number;
+  maxAmazonPrice: number;
+  diagnosticsOnly: boolean;
+}
+
+export const KEEPA_PROFILES: KeepaProfileInfo[] = [
+  { name: 'strict', minRankImprovementPercent: 20, minAmazonPrice: 12, maxAmazonPrice: 150, diagnosticsOnly: false },
+  { name: 'balanced', minRankImprovementPercent: 10, minAmazonPrice: 10, maxAmazonPrice: 150, diagnosticsOnly: false },
+  { name: 'broad', minRankImprovementPercent: 5, minAmazonPrice: 10, maxAmazonPrice: 200, diagnosticsOnly: false },
+  { name: 'exploratory', minRankImprovementPercent: 0, minAmazonPrice: 5, maxAmazonPrice: 300, diagnosticsOnly: true },
+];
+
 export interface DiscoveryAgentInfo {
   name: string;
   implemented: ImplementedStatus;
@@ -34,10 +50,10 @@ export const DISCOVERY_AGENTS: DiscoveryAgentInfo[] = [
     implemented: 'real',
     dataSource: 'Keepa API (/query Product Finder + /product stats)',
     requiresCredentials: 'KEEPA_API_KEY (+ eBay creds for demand scoring)',
-    testCommand: 'npm run test:keepa-discovery / npm run run:keepa-discovery',
-    lastSuccessfulRun: 'Mock e2e verified; real run requires Keepa Product Finder plan',
+    testCommand: 'run:keepa-discovery --profile=strict|balanced|broad|exploratory; calibrate:keepa-discovery',
+    lastSuccessfulRun: 'Real endpoint confirmed (12 ASINs, 80 tokens); calibration profiles added',
     priority: null,
-    notes: 'LIVE. ASIN-native discovery: pulls rising-rank Amazon products from Keepa, bypasses the ASIN resolver, and routes through the full validation chain. If the Keepa plan lacks Product Finder it reports KEEPA_PLAN_LIMITATION/KEEPA_ENDPOINT_UNAVAILABLE instead of faking candidates.',
+    notes: 'LIVE. ASIN-native: pulls rising-rank Amazon products from Keepa, bypasses the ASIN resolver, routes through the full validation chain. Calibration profiles strict/balanced/broad/exploratory tune discovery input only (gates unchanged). Filter losses are reported with KEEPA_* reason codes. If the plan lacks Product Finder it reports KEEPA_PLAN_LIMITATION/KEEPA_ENDPOINT_UNAVAILABLE instead of faking candidates.',
   },
   {
     name: 'Amazon Best Sellers',

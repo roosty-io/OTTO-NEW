@@ -31,6 +31,7 @@ export interface AmazonValidationInput {
 export interface AmazonValidationData {
   asin: string;
   amazonUrl: string;
+  pageLoaded?: boolean;
   productTitle?: string;
   brand?: string;
   price?: number;

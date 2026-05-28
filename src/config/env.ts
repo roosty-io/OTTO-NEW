@@ -41,7 +41,9 @@ export const env = {
     discoveryMaxAsins: num('KEEPA_DISCOVERY_MAX_ASINS', 100),
     discoveryMinRankImprovementPercent: num('KEEPA_DISCOVERY_MIN_RANK_IMPROVEMENT_PERCENT', 20),
     discoveryMinAvgRank30d: num('KEEPA_DISCOVERY_MIN_AVG_RANK_30D', 0), // 0 = no floor
-    discoveryMaxSalesRank: num('KEEPA_DISCOVERY_MAX_SALES_RANK', 0), // 0 = no ceiling
+    // Ceiling on current sales rank so discovery doesn't fetch dead, high-rank
+    // products (calibration found 11M-rank junk with no ceiling). 0 = no ceiling.
+    discoveryMaxSalesRank: num('KEEPA_DISCOVERY_MAX_SALES_RANK', 150000),
     discoveryAllowedCategories: str('KEEPA_DISCOVERY_ALLOWED_CATEGORIES'), // blank = built-in V1 safe set
     discoveryExcludedCategories: str('KEEPA_DISCOVERY_EXCLUDED_CATEGORIES'),
     discoveryMinAmazonPrice: num('KEEPA_DISCOVERY_MIN_AMAZON_PRICE', 10),

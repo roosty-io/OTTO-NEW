@@ -13,7 +13,20 @@
 import { normalizeKeepaProduct, keepaDiscoveryScore } from '@/clients/keepaClient';
 import { isCategoryAllowed, resolveCategoryTargets, ALLOWED_V1_CATEGORIES } from '@/utils/keepaCategories';
 import { asinNativeResolution } from '@/pipeline/asinResolution';
+import { resolveProfile, mergeKeepaOptions, KEEPA_PROFILES } from '@/config/keepaProfiles';
+import { classifyKeepaCandidate, KeepaFilterReason } from '@/agents/discovery/keepaFilters';
 import type { ProductCandidate } from '@/types/product';
+
+const DEFAULTS = { minRankImprovementPercent: 20, minAmazonPrice: 10, maxAmazonPrice: 150, maxAsins: 100 };
+const FILTER_OPTS = { minRankImprovementPercent: 10, minAmazonPrice: 10, maxAmazonPrice: 150 };
+function norm(over: Partial<{ asin: string; title: string; amazonCategory: string; rootCategory: number; amazonPrice: number; rankImprovement30d: number }> = {}) {
+  return {
+    asin: over.asin ?? 'B0X', title: over.title ?? 'Storage bin',
+    amazonCategory: over.amazonCategory ?? 'Home & Kitchen > Storage',
+    rootCategory: over.rootCategory ?? 1055398,
+    amazonPrice: over.amazonPrice, rankImprovement30d: over.rankImprovement30d,
+  } as Parameters<typeof classifyKeepaCandidate>[0];
+}
 
 // Keepa CSV indices: 0=AMAZON, 3=SALES, 16=RATING(x10), 17=REVIEWS.
 function rawProduct(over: Partial<{ asin: string; rankCurrent: number; rank30: number; priceCents: number; category: string; rootCategory: number }> = {}) {
@@ -147,6 +160,80 @@ const CASES: Case[] = [
       const high = keepaDiscoveryScore({ asin: 'A', rankImprovement30d: 60, salesRankCurrent: 3000 });
       return high > low && high <= 100 && low >= 0;
     },
+  },
+  // --- calibration profiles ---
+  {
+    label: 'profiles exist with expected thresholds (strict/balanced/broad/exploratory)',
+    run: () => {
+      return (
+        KEEPA_PROFILES.strict.minRankImprovementPercent === 20 &&
+        KEEPA_PROFILES.balanced.minRankImprovementPercent === 10 &&
+        KEEPA_PROFILES.broad.minRankImprovementPercent === 5 &&
+        KEEPA_PROFILES.broad.maxAmazonPrice === 200 &&
+        KEEPA_PROFILES.exploratory.diagnosticsOnly === true
+      );
+    },
+  },
+  {
+    label: 'resolveProfile parses name (case-insensitive), rejects unknown',
+    run: () => {
+      return resolveProfile('BALANCED')?.name === 'balanced' && resolveProfile('nope') === null && resolveProfile(undefined) === null;
+    },
+  },
+  {
+    label: 'mergeKeepaOptions: profile sets base, explicit overrides win',
+    run: () => {
+      const m = mergeKeepaOptions(KEEPA_PROFILES.strict, { minRankImprovementPercent: 7, maxAsins: 25 }, DEFAULTS);
+      return m.minRankImprovementPercent === 7 && m.minAmazonPrice === 12 && m.maxAmazonPrice === 150 && m.maxAsins === 25 && m.profileName === 'strict';
+    },
+  },
+  {
+    label: 'mergeKeepaOptions: no profile => env defaults, profileName=custom',
+    run: () => {
+      const m = mergeKeepaOptions(null, {}, DEFAULTS);
+      return m.minRankImprovementPercent === 20 && m.minAmazonPrice === 10 && m.maxAmazonPrice === 150 && m.profileName === 'custom';
+    },
+  },
+  // --- filter reason codes ---
+  {
+    label: 'classify: accepted candidate',
+    run: () => classifyKeepaCandidate(norm({ amazonPrice: 25, rankImprovement30d: 30 }), FILTER_OPTS).accepted === true,
+  },
+  {
+    label: 'classify: missing ASIN => KEEPA_MISSING_ASIN',
+    run: () => classifyKeepaCandidate(null, FILTER_OPTS).reason === KeepaFilterReason.KEEPA_MISSING_ASIN,
+  },
+  {
+    label: 'classify: missing title => KEEPA_MISSING_TITLE',
+    run: () => classifyKeepaCandidate(norm({ title: '' }), FILTER_OPTS).reason === KeepaFilterReason.KEEPA_MISSING_TITLE,
+  },
+  {
+    label: 'classify: excluded category => KEEPA_CATEGORY_EXCLUDED',
+    run: () => classifyKeepaCandidate(norm({ amazonCategory: 'Health & Personal Care', title: 'vitamin' }), FILTER_OPTS).reason === KeepaFilterReason.KEEPA_CATEGORY_EXCLUDED,
+  },
+  {
+    label: 'classify: rank improvement too low => KEEPA_RANK_IMPROVEMENT_TOO_LOW',
+    run: () => classifyKeepaCandidate(norm({ amazonPrice: 25, rankImprovement30d: 3 }), FILTER_OPTS).reason === KeepaFilterReason.KEEPA_RANK_IMPROVEMENT_TOO_LOW,
+  },
+  {
+    label: 'classify: price too low / too high',
+    run: () => {
+      const lo = classifyKeepaCandidate(norm({ amazonPrice: 4, rankImprovement30d: 30 }), FILTER_OPTS).reason;
+      const hi = classifyKeepaCandidate(norm({ amazonPrice: 999, rankImprovement30d: 30 }), FILTER_OPTS).reason;
+      return lo === KeepaFilterReason.KEEPA_PRICE_TOO_LOW && hi === KeepaFilterReason.KEEPA_PRICE_TOO_HIGH;
+    },
+  },
+  {
+    label: 'classify: missing price allowed by default, rejected when requirePrice',
+    run: () => {
+      const allowed = classifyKeepaCandidate(norm({ rankImprovement30d: 30 }), FILTER_OPTS).accepted === true;
+      const rejected = classifyKeepaCandidate(norm({ rankImprovement30d: 30 }), { ...FILTER_OPTS, requirePrice: true }).reason === KeepaFilterReason.KEEPA_MISSING_PRICE;
+      return allowed && rejected;
+    },
+  },
+  {
+    label: 'classify: undefined rank improvement is NOT rejected (cant judge)',
+    run: () => classifyKeepaCandidate(norm({ amazonPrice: 25 }), FILTER_OPTS).accepted === true,
   },
 ];
 
