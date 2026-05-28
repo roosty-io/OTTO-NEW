@@ -122,6 +122,59 @@ codes, funnel counts, and Amazon source-validation failure diagnostics
 (reason, page-loaded, price, buyable, stock, delivery gate, restricted
 signals). It prints a rough Keepa token estimate before running.
 
+### Amazon environment readiness (run this before scaling Keepa)
+
+Keepa discovery finds Amazon ASINs cheaply, **but those ASINs can only be
+validated if this environment can actually load Amazon product pages.**
+In a blocked/egress-restricted environment every candidate fails source
+validation (`AMAZON_PAGE_UNAVAILABLE` / `pageLoaded=false`) no matter how
+good the Keepa input is. Check first:
+
+```bash
+npm run test:amazon-environment
+```
+
+It loads ~5 known-stable ASINs with the **same Playwright client**
+`AmazonSourceValidationAgent` uses (no faking, no gate changes; consumes
+**no Keepa tokens**) and prints, per ASIN: pageLoaded, blockedOrCaptcha,
+validationErrorCode, and whether title / price / availability / delivery
+were captured. It then classifies the environment:
+
+| Result | Meaning | Action |
+| --- | --- | --- |
+| `AMAZON_ENV_READY` | ≥80% pages load and ≥60% capture title+price | Safe to run Keepa discovery |
+| `AMAZON_ENV_PARTIAL` | Some load but extraction inconsistent | Works, but expect higher source-validation failure rates |
+| `AMAZON_ENV_BLOCKED` | Captcha / blocking detected | Use a proxy before spending Keepa tokens |
+| `AMAZON_ENV_UNUSABLE` | No pages load | Cannot validate Amazon here; configure a proxy or run where Amazon is reachable |
+
+**Proxy env vars** (optional — only needed when Amazon is blocked/unusable):
+
+| Var | Purpose |
+| --- | --- |
+| `AMAZON_PROXY_SERVER` | Proxy host:port for Playwright (e.g. a residential/datacenter proxy). |
+| `AMAZON_PROXY_USERNAME` | Proxy username, if the proxy requires auth. |
+| `AMAZON_PROXY_PASSWORD` | Proxy password. **Never printed** by any OTTO script — diagnostics show host:port only. |
+
+OTTO does not require, purchase, or auto-configure a proxy. If these are
+unset, proxy mode is reported as `disabled`.
+
+#### Preflight before spending Keepa tokens
+
+Both Keepa runners accept `--preflight-amazon`: they run the readiness
+check first and **stop before consuming any Keepa tokens** if the
+environment is `BLOCKED` or `UNUSABLE` (unless `--force` is given).
+`PARTIAL` warns but continues; `READY` continues.
+
+```bash
+npm run run:keepa-discovery -- --profile=balanced --limit=25 --preflight-amazon
+npm run calibrate:keepa-discovery -- --limit=25 --preflight-amazon
+npm run calibrate:keepa-discovery -- --limit=25 --preflight-amazon --force   # override
+```
+
+Keepa reports include `amazon_environment_status`, `proxy_enabled`,
+`preflight_performed`, and `preflight_result`; when a run is stopped at
+preflight the report states that no Keepa tokens were consumed.
+
 ### ASIN resolver smoke test
 
 ```bash

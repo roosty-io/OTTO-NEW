@@ -26,6 +26,7 @@ import { env } from '@/config/env';
 import { normalizeRepeatPolicy, isRepeatPolicy, type RepeatPolicy } from '@/agents/export/crossBatchFilter';
 import { KEEPA_PROFILES, resolveProfile, type KeepaProfile, type KeepaProfileName } from '@/config/keepaProfiles';
 import { executeKeepaDiscovery, type KeepaRunResult } from '@/pipeline/keepaDiscoveryRun';
+import { preflightAmazon, proxyDiagnostics, type AmazonEnvReport } from '@/pipeline/amazonEnvironment';
 
 const DEFAULT_LIMIT = 25;
 const SAFE_LIMIT_MAX = 100;
@@ -37,6 +38,8 @@ interface CalArgs {
   profiles: KeepaProfile[];
   repeatPolicy: RepeatPolicy;
   repeatLookbackDays: number;
+  preflightAmazon: boolean;
+  force: boolean;
 }
 
 interface ProfileRun {
@@ -54,6 +57,31 @@ async function main(): Promise<void> {
     for (const p of problems) log.error(p);
     console.log('\nCalibration aborted: missing required env.\n  ' + problems.join('\n  '));
     process.exit(2);
+  }
+
+  // Amazon preflight (consumes no Keepa tokens) BEFORE any token spend.
+  let preflight: AmazonEnvReport | undefined;
+  if (args.preflightAmazon) {
+    console.log('\nRunning Amazon environment preflight (no Keepa tokens consumed)...');
+    const decision = await preflightAmazon(args.force);
+    preflight = decision.report;
+    console.log(`  Amazon environment: ${preflight.status} (loaded ${preflight.loaded}/${preflight.total}, proxy ${preflight.proxy.enabled ? 'enabled' : 'disabled'})`);
+    if (!decision.proceed) {
+      console.log(`\nStopping before consuming Keepa tokens: Amazon environment is ${preflight.status}.`);
+      console.log('No Keepa tokens were consumed. Re-run with --force to override, or configure AMAZON_PROXY_SERVER.');
+      try {
+        const { getAmazonBrowserClient } = await import('@/clients/amazonBrowserClient');
+        await getAmazonBrowserClient().close();
+      } catch { /* ignore */ }
+      const reportPath = writePreflightOnlyReport(timestamp, args, preflight);
+      console.log(`Calibration report written: ${reportPath}\n`);
+      process.exit(1);
+    }
+    if (preflight.status === 'AMAZON_ENV_PARTIAL') {
+      console.log('  WARNING: Amazon environment is PARTIAL; expect higher source-validation failures.');
+    } else if (preflight.status === 'AMAZON_ENV_BLOCKED' || preflight.status === 'AMAZON_ENV_UNUSABLE') {
+      console.log(`  WARNING: proceeding despite ${preflight.status} because --force was provided.`);
+    }
   }
 
   // Token cost guidance before doing real work.
@@ -117,7 +145,7 @@ async function main(): Promise<void> {
     log.warn('amazon browser close failed', { err: (err as Error).message });
   }
 
-  const reportPath = writeComparisonReport(timestamp, args, runs);
+  const reportPath = writeComparisonReport(timestamp, args, runs, preflight);
   console.log(`\nCalibration report written: ${reportPath}\n`);
 }
 
@@ -127,6 +155,8 @@ function parseArgs(): CalArgs {
   let profiles: KeepaProfile[] = DEFAULT_PROFILES.map((n) => KEEPA_PROFILES[n]);
   let repeatPolicy = normalizeRepeatPolicy(env.export.repeatPolicy);
   let repeatLookbackDays = env.export.repeatLookbackDays;
+  let preflightAmazonFlag = false;
+  let force = false;
   for (const a of argv) {
     if (a.startsWith('--limit=')) {
       const n = Number(a.split('=')[1]);
@@ -143,9 +173,13 @@ function parseArgs(): CalArgs {
     } else if (a.startsWith('--repeat-lookback-days=')) {
       const n = Number(a.split('=')[1]);
       if (Number.isFinite(n) && n >= 0) repeatLookbackDays = Math.trunc(n);
+    } else if (a === '--preflight-amazon') {
+      preflightAmazonFlag = true;
+    } else if (a === '--force') {
+      force = true;
     }
   }
-  return { limit, profiles, repeatPolicy, repeatLookbackDays };
+  return { limit, profiles, repeatPolicy, repeatLookbackDays, preflightAmazon: preflightAmazonFlag, force };
 }
 
 function validateEnv(): string[] {
@@ -184,8 +218,9 @@ function reportsDir(): string {
   return dir;
 }
 
-function writeComparisonReport(timestamp: string, args: CalArgs, runs: ProfileRun[]): string {
+function writeComparisonReport(timestamp: string, args: CalArgs, runs: ProfileRun[], preflight?: AmazonEnvReport): string {
   const file = path.join(reportsDir(), `otto-keepa-calibration-${timestamp}.md`);
+  const proxy = proxyDiagnostics();
   const lines: string[] = [];
   lines.push('# OTTO Keepa Discovery Calibration');
   lines.push('');
@@ -193,6 +228,13 @@ function writeComparisonReport(timestamp: string, args: CalArgs, runs: ProfileRu
   lines.push(`- **Limit/profile**: ${args.limit}`);
   lines.push(`- **Repeat policy**: \`${args.repeatPolicy}\` (lookback ${args.repeatLookbackDays}d)`);
   lines.push(`- **Keepa endpoint**: Product Finder (\`/query\`) + \`/product\` (stats=90)`);
+  lines.push('');
+  lines.push('## Amazon environment');
+  lines.push('');
+  lines.push(`- amazon_environment_status: \`${preflight ? preflight.status : 'not checked'}\``);
+  lines.push(`- proxy_enabled: ${proxy.enabled}${proxy.enabled && proxy.serverMasked ? ` (${proxy.serverMasked})` : ''}`);
+  lines.push(`- preflight_performed: ${preflight ? true : false}`);
+  lines.push(`- preflight_result: ${preflight ? preflight.status : 'n/a'}`);
   lines.push('');
   lines.push('## Profile comparison');
   lines.push('');
@@ -247,6 +289,34 @@ function writeComparisonReport(timestamp: string, args: CalArgs, runs: ProfileRu
     }
   }
 
+  fs.writeFileSync(file, lines.join('\n'), 'utf8');
+  return file;
+}
+
+function writePreflightOnlyReport(timestamp: string, args: CalArgs, preflight: AmazonEnvReport): string {
+  const file = path.join(reportsDir(), `otto-keepa-calibration-${timestamp}.md`);
+  const proxy = proxyDiagnostics();
+  const lines: string[] = [];
+  lines.push('# OTTO Keepa Discovery Calibration (preflight stop)');
+  lines.push('');
+  lines.push(`- **Generated**: ${new Date().toISOString()}`);
+  lines.push(`- **Limit/profile**: ${args.limit}`);
+  lines.push('');
+  lines.push('## Amazon environment');
+  lines.push('');
+  lines.push(`- amazon_environment_status: \`${preflight.status}\``);
+  lines.push(`- proxy_enabled: ${proxy.enabled}${proxy.enabled && proxy.serverMasked ? ` (${proxy.serverMasked})` : ''}`);
+  lines.push(`- preflight_performed: true`);
+  lines.push(`- preflight_result: ${preflight.status}`);
+  lines.push('');
+  lines.push('**Stopped before any profile ran — no Keepa tokens were consumed.** Re-run with `--force` to override.');
+  lines.push('');
+  lines.push('| ASIN | loaded | blocked | error | title | price |');
+  lines.push('| --- | --- | --- | --- | --- | --- |');
+  for (const p of preflight.probes) {
+    lines.push(`| \`${p.asin}\` | ${p.pageLoaded} | ${p.blockedOrCaptcha} | ${p.validationErrorCode ?? '-'} | ${p.titleCaptured} | ${p.priceCaptured} |`);
+  }
+  lines.push('');
   fs.writeFileSync(file, lines.join('\n'), 'utf8');
   return file;
 }
