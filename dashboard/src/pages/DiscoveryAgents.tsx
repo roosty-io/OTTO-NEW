@@ -5,7 +5,7 @@ import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from '@/component
 import { Scorecard } from '@/components/Scorecard';
 import { useLatestAmazonEnvCheck } from '@/lib/queries';
 import { fmtDate } from '@/lib/utils';
-import { DISCOVERY_AGENTS, KEEPA_PROFILES, type DiscoveryAgentInfo, type ImplementedStatus } from '@/lib/discoveryAgents';
+import { DISCOVERY_AGENTS, KEEPA_PROFILES, KEEPA_STRATEGIES, type DiscoveryAgentInfo, type ImplementedStatus } from '@/lib/discoveryAgents';
 
 const TONE: Record<ImplementedStatus, 'good' | 'warn' | 'muted'> = {
   real: 'good',
@@ -133,12 +133,14 @@ export function DiscoveryAgents() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Keepa discovery calibration</CardTitle>
+            <CardTitle>Keepa discovery: profiles &amp; strategies</CardTitle>
             <CardSubtitle>
-              Keepa Rank Movement supports calibration profiles (discovery input only — validation gates unchanged).
+              Keepa Rank Movement supports calibration profiles and Product Finder strategies. Both tune discovery
+              input only — downstream validation gates are unchanged.
             </CardSubtitle>
           </CardHeader>
           <CardBody>
+            <div className="text-xs font-semibold text-muted mb-2">Profiles (movement + price band)</div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
               {KEEPA_PROFILES.map((p) => (
                 <div key={p.name} className="flex items-start gap-2">
@@ -150,10 +152,24 @@ export function DiscoveryAgents() {
                 </div>
               ))}
             </div>
+            <div className="text-xs font-semibold text-muted mt-4 mb-2">
+              Strategies (Product Finder query shapes) — <code className="font-mono">--strategy=all</code> unions + dedupes them
+            </div>
+            <div className="grid grid-cols-1 gap-2 text-sm">
+              {KEEPA_STRATEGIES.map((st) => (
+                <div key={st.name} className="flex items-start gap-2">
+                  <Badge tone="default">{st.name}</Badge>
+                  <span className="text-muted text-xs">{st.description}</span>
+                </div>
+              ))}
+            </div>
             <p className="text-muted text-xs mt-3">
-              Calibrate: <code className="font-mono">npm run calibrate:keepa-discovery -- --limit=25</code>.
-              Reports saved to <code className="font-mono">reports/otto-keepa-calibration-&lt;timestamp&gt;.md</code>.
-              Filter losses are reported with <code className="font-mono">KEEPA_*</code> reason codes.
+              Discover: <code className="font-mono">npm run run:keepa-discovery -- --profile=exploratory --strategy=all --limit=10 --preflight-amazon</code>.
+              Use <code className="font-mono">exploratory</code> (widest, diagnostics-only) to maximize candidate volume while debugging coverage.
+              A token guard blocks expensive runs when the estimate exceeds <code className="font-mono">--max-keepa-tokens</code>
+              (env <code className="font-mono">KEEPA_DISCOVERY_MAX_TOKENS_PER_RUN</code>); override with <code className="font-mono">--force</code>.
+              Calibrate: <code className="font-mono">npm run calibrate:keepa-discovery -- --limit=10</code>.
+              Reports saved to <code className="font-mono">reports/</code>; filter losses use <code className="font-mono">KEEPA_*</code> reason codes.
             </p>
           </CardBody>
         </Card>

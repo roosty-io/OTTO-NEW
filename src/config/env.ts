@@ -48,6 +48,10 @@ export const env = {
     discoveryExcludedCategories: str('KEEPA_DISCOVERY_EXCLUDED_CATEGORIES'),
     discoveryMinAmazonPrice: num('KEEPA_DISCOVERY_MIN_AMAZON_PRICE', 10),
     discoveryMaxAmazonPrice: num('KEEPA_DISCOVERY_MAX_AMAZON_PRICE', 150),
+    // Token guard: estimated Keepa token ceiling per discovery run. Because
+    // --strategy=all issues many Product Finder queries, a run that would
+    // exceed this is blocked unless --force is passed. 0 = no guard.
+    discoveryMaxTokensPerRun: num('KEEPA_DISCOVERY_MAX_TOKENS_PER_RUN', 1000),
   },
   amazon: {
     // Legacy combined proxy URL (kept for back-compat with V1.0 env files).

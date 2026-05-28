@@ -6,6 +6,31 @@ _Update 2026-05-28: **Keepa Rank Movement Discovery is now implemented**
 (`npm run run:keepa-discovery`) — the first ASIN-native discovery source.
 See `DISCOVERY_EXPANSION_PLAN.md` for the build it came from._
 
+_Update 2026-05-28 (volume): **Keepa now runs multiple Product Finder
+strategies** to raise candidate volume without touching any validation gate.
+Strategies: `rank_drops_30d`, `rank_drops_90d`, `current_rank_only`,
+`category_movers`, `price_band_movers`, `review_quality_movers`, and `all`
+(default). Each is a distinct `/query` selection; their ASINs are unioned and
+**deduped** (each ASIN keeps `primary_keepa_strategy`, `strategies_found`,
+`strategy_count`, `best_discovery_score`). New flags:_
+- `--strategy=all` _(default) or a single/comma-separated strategy name._
+- `--max-keepa-tokens=N` _token guard (env `KEEPA_DISCOVERY_MAX_TOKENS_PER_RUN`,
+  default 1000). A run whose **estimate** exceeds the budget is stopped before
+  any token is spent; the run also self-limits against actual usage._
+- `--force` _overrides the token guard (and, as before, the Amazon preflight)._
+
+_Reports now show per-strategy products returned / accepted / rejected, filter
+reasons by strategy, duplicate ASINs across strategies, final unique
+ASIN-native candidates, and the strategy that produced each exported product.
+`calibrate:keepa-discovery` compares a profile×strategy matrix and prints a
+recommended profile/strategy. Use the `exploratory` profile (widest,
+diagnostics-only — never the default export path) when maximizing volume while
+debugging coverage. Example:_
+
+```
+npm run run:keepa-discovery -- --profile=exploratory --strategy=all --limit=10 --preflight-amazon
+```
+
 ## TL;DR
 
 - **Real discovery sources: `eBay Keyword Discovery` and

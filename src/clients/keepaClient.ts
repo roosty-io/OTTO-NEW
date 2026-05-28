@@ -86,6 +86,30 @@ export interface RankMoversResult {
   error?: KeepaError;
 }
 
+/**
+ * Structured Product Finder (/query) selection spec. Each discovery strategy
+ * (see config/keepaStrategies.ts) compiles to one or more of these. Only the
+ * provided knobs are emitted into the Keepa selection JSON; everything maps
+ * to real Keepa Product Finder fields (no fabricated criteria).
+ */
+export interface KeepaQuerySpec {
+  /** Human-readable label, e.g. "price_band_movers:$25-50". */
+  label: string;
+  /** Strategy that produced this spec, e.g. "rank_drops_30d". */
+  strategy: string;
+  rootCategory: number;
+  maxResults: number;
+  salesRankDrops30Min?: number; // salesRankDrops30_gte
+  salesRankDrops90Min?: number; // salesRankDrops90_gte
+  currentRankMax?: number; // current_SALES_lte
+  minAvgRank30d?: number; // avg30_SALES_gte
+  minAmazonPriceCents?: number; // current_AMAZON_gte
+  maxAmazonPriceCents?: number; // current_AMAZON_lte
+  minRatingX10?: number; // current_RATING_gte (Keepa rating is 0-50, i.e. stars x10)
+  minReviewCount?: number; // current_COUNT_REVIEWS_gte
+  sort?: [string, 'asc' | 'desc'][];
+}
+
 export interface FetchProductsResult {
   products: KeepaProductSummary[];
   tokens: KeepaTokenInfo;
@@ -164,51 +188,39 @@ export class KeepaClient {
   /**
    * Product Finder (/query) for rank-movement discovery: products in a
    * root category whose sales rank improved over the last 30 days.
-   * Returns a list of ASINs only (then enrich with fetchProductsByAsin).
+   * Retained for back-compat; delegates to findProducts with the canonical
+   * 30-day rank-drop spec.
    */
   async findRankMovers(input: RankMoversInput): Promise<RankMoversResult> {
+    return this.findProducts({
+      label: 'rank_drops_30d',
+      strategy: 'rank_drops_30d',
+      rootCategory: input.rootCategory,
+      maxResults: input.maxResults,
+      salesRankDrops30Min: 1, // had at least one rank improvement in 30 days
+      currentRankMax: input.maxSalesRank, // ceiling so we skip dead, high-rank products
+      minAvgRank30d: input.minAvgRank30d,
+      minAmazonPriceCents: input.minAmazonPriceCents,
+      maxAmazonPriceCents: input.maxAmazonPriceCents,
+      sort: [['salesRankDrops30', 'desc']],
+    });
+  }
+
+  /**
+   * Generic Product Finder (/query) call from a structured spec. Returns a
+   * list of ASINs only (then enrich with fetchProductsByAsin). Mock mode
+   * returns deterministic ASINs; real mode never fabricates — a failed or
+   * plan-limited endpoint returns a typed error with zero ASINs.
+   */
+  async findProducts(spec: KeepaQuerySpec): Promise<RankMoversResult> {
     if (env.runtime.mockMode) {
-      // Deterministic mock ASINs so the pipeline can be exercised offline.
-      const n = Math.max(1, Math.min(input.maxResults, 5));
-      const asins = Array.from({ length: n }, (_, i) => `B0KEEPA${String(input.rootCategory).slice(-2)}${i}`);
-      return { asins, tokens: { tokensLeft: 9999 } };
+      return { asins: mockProductFinderAsins(spec), tokens: { tokensLeft: 9999, tokensConsumed: 1 } };
     }
     if (!env.keepa.apiKey) {
       return { asins: [], tokens: {}, error: { code: 'KEEPA_NOT_CONFIGURED', message: 'KEEPA_API_KEY is not set' } };
     }
 
-    // Keepa Product Finder selection. delta30_SALES < 0 means the sales
-    // rank number dropped (improved) over 30 days.  Sorted by the biggest
-    // 30-day improvement first.
-    // Keepa Product Finder requires a page size within its allowed range
-    // (small values like 0-4 are rejected with "too small").  Request a
-    // standard page (50) and slice to the caller's budget afterward.
-    const perPage = Math.max(50, Math.min(input.maxResults, 100));
-    const selection: Record<string, unknown> = {
-      rootCategory: input.rootCategory,
-      productType: [0, 1], // standard + variation parent
-      perPage,
-      page: 0,
-      sort: [['salesRankDrops30', 'desc']], // most 30-day rank improvements first
-      // Require a live, non-trivial sales rank so we don't fetch dead products.
-      current_SALES_gte: 1,
-      salesRankDrops30_gte: 1, // had at least one rank improvement in 30 days
-    };
-    // Sales-rank ceiling: critical — without it the Finder returns
-    // multi-million-rank dead products.  Defaults applied by the agent/env.
-    if (input.maxSalesRank && input.maxSalesRank > 0) {
-      selection.current_SALES_lte = input.maxSalesRank;
-    }
-    if (input.minAvgRank30d && input.minAvgRank30d > 0) {
-      selection.avg30_SALES_gte = input.minAvgRank30d;
-    }
-    if (input.minAmazonPriceCents && input.minAmazonPriceCents > 0) {
-      selection.current_AMAZON_gte = input.minAmazonPriceCents;
-    }
-    if (input.maxAmazonPriceCents && input.maxAmazonPriceCents > 0) {
-      selection.current_AMAZON_lte = input.maxAmazonPriceCents;
-    }
-
+    const selection = buildProductFinderSelection(spec);
     try {
       const res = await this.http.get('/query', {
         params: {
@@ -223,11 +235,60 @@ export class KeepaClient {
       if (!Array.isArray(asinList)) {
         return { asins: [], tokens, error: { code: 'KEEPA_API_ERROR', message: 'Unexpected /query response shape' } };
       }
-      return { asins: asinList.slice(0, input.maxResults), tokens };
+      return { asins: asinList.slice(0, spec.maxResults), tokens };
     } catch (err) {
       return { asins: [], tokens: {}, error: classifyKeepaError(err, this.log) };
     }
   }
+}
+
+/**
+ * Pure compiler from a KeepaQuerySpec to a Keepa Product Finder selection
+ * object. Only real Keepa fields are emitted. Keepa rejects tiny page sizes,
+ * so perPage is clamped to [50,100] and the caller slices to maxResults.
+ */
+export function buildProductFinderSelection(spec: KeepaQuerySpec): Record<string, unknown> {
+  const perPage = Math.max(50, Math.min(spec.maxResults, 100));
+  const selection: Record<string, unknown> = {
+    rootCategory: spec.rootCategory,
+    productType: [0, 1], // standard + variation parent
+    perPage,
+    page: 0,
+    sort: spec.sort ?? [['current_SALES', 'asc']],
+    // Require a live, non-trivial sales rank so we don't fetch dead products.
+    current_SALES_gte: 1,
+  };
+  if (spec.salesRankDrops30Min && spec.salesRankDrops30Min > 0) selection.salesRankDrops30_gte = spec.salesRankDrops30Min;
+  if (spec.salesRankDrops90Min && spec.salesRankDrops90Min > 0) selection.salesRankDrops90_gte = spec.salesRankDrops90Min;
+  if (spec.currentRankMax && spec.currentRankMax > 0) selection.current_SALES_lte = spec.currentRankMax;
+  if (spec.minAvgRank30d && spec.minAvgRank30d > 0) selection.avg30_SALES_gte = spec.minAvgRank30d;
+  if (spec.minAmazonPriceCents && spec.minAmazonPriceCents > 0) selection.current_AMAZON_gte = spec.minAmazonPriceCents;
+  if (spec.maxAmazonPriceCents && spec.maxAmazonPriceCents > 0) selection.current_AMAZON_lte = spec.maxAmazonPriceCents;
+  if (spec.minRatingX10 && spec.minRatingX10 > 0) selection.current_RATING_gte = spec.minRatingX10;
+  if (spec.minReviewCount && spec.minReviewCount > 0) selection.current_COUNT_REVIEWS_gte = spec.minReviewCount;
+  return selection;
+}
+
+/**
+ * Deterministic mock ASINs for offline/mock-mode runs. Each category yields a
+ * couple of shared ASINs (so cross-strategy dedupe is exercised) plus a few
+ * strategy-unique ASINs (so strategy=all grows the candidate pool beyond a
+ * single strategy). NEVER used in real mode.
+ */
+export function mockProductFinderAsins(spec: KeepaQuerySpec): string[] {
+  const cat = String(spec.rootCategory).slice(-2);
+  const seed = strategyMockSeed(spec.strategy);
+  const shared = [`B0KEEPA${cat}0`, `B0KEEPA${cat}1`];
+  const unique = [0, 1, 2].map((i) => `B0K${cat}S${seed}${i}`);
+  const all = [...shared, ...unique];
+  const n = Math.max(1, Math.min(spec.maxResults, all.length));
+  return all.slice(0, n);
+}
+
+function strategyMockSeed(strategy: string): string {
+  let h = 0;
+  for (const ch of strategy) h = (h + ch.charCodeAt(0)) % 36;
+  return h.toString(36);
 }
 
 /** Pure normalization of a raw Keepa product object into a candidate view. */

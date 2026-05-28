@@ -12,7 +12,13 @@ import { getAmazonBrowserClient } from '@/clients/amazonBrowserClient';
 import { logger } from '@/utils/logger';
 import { RejectionReason } from '@/utils/rejectionReasons';
 
-import { KeepaRankMovementDiscoveryAgent, type KeepaCategoryStat } from '@/agents/discovery/KeepaRankMovementDiscoveryAgent';
+import {
+  KeepaRankMovementDiscoveryAgent,
+  type KeepaCategoryStat,
+  type KeepaStrategyStat,
+  type AsinStrategyProvenance,
+} from '@/agents/discovery/KeepaRankMovementDiscoveryAgent';
+import type { KeepaStrategyName } from '@/config/keepaStrategies';
 import { BasicAmazonAsinResolverAgent } from '@/agents/asin/BasicAmazonAsinResolverAgent';
 import { AmazonSourceValidationAgent } from '@/agents/amazon/AmazonSourceValidationAgent';
 import { EbayDemandScoringAgent } from '@/agents/ebay/EbayDemandScoringAgent';
@@ -38,6 +44,12 @@ export interface KeepaRunOptions {
   repeatPolicy: RepeatPolicy;
   repeatLookbackDays: number;
   isSynthetic: boolean;
+  /** Product Finder strategies to run; empty/undefined = all strategies. */
+  strategies?: KeepaStrategyName[];
+  /** Token budget for the run (0 = no guard). */
+  maxKeepaTokens?: number;
+  /** Bypass the token guard. */
+  force?: boolean;
   /** Close the shared Amazon browser when done (single-run). Calibrator keeps it open across profiles. */
   closeBrowser?: boolean;
 }
@@ -82,6 +94,12 @@ export interface SourceFailureSample {
 export interface KeepaRunResult {
   stats: KeepaRunStats;
   perCategory: KeepaCategoryStat[];
+  perStrategy: KeepaStrategyStat[];
+  strategiesRun: string[];
+  duplicateAsinsAcrossStrategies: number;
+  uniqueAsinCandidates: number;
+  strategyByAsin: Record<string, AsinStrategyProvenance>;
+  tokenBudgetStopped: boolean;
   filterReasons: Record<string, number>;
   tokens: KeepaTokenInfo;
   keepaError?: KeepaError;
@@ -117,6 +135,9 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
     minAmazonPrice: opts.minAmazonPrice,
     maxAmazonPrice: opts.maxAmazonPrice,
     minRankImprovementPercent: opts.minRankImprovementPercent,
+    strategies: opts.strategies,
+    maxKeepaTokens: opts.maxKeepaTokens,
+    force: opts.force,
   });
   stats.rawKeepaCandidates = discovery.rawCandidateCount;
   stats.asinNativeCandidates = discovery.asinNativeCount;
@@ -368,6 +389,12 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
   return {
     stats,
     perCategory: discovery.perCategory,
+    perStrategy: discovery.perStrategy,
+    strategiesRun: discovery.strategiesRun,
+    duplicateAsinsAcrossStrategies: discovery.duplicateAsinsAcrossStrategies,
+    uniqueAsinCandidates: discovery.asinNativeCount,
+    strategyByAsin: discovery.strategyByAsin,
+    tokenBudgetStopped: discovery.tokenBudgetStopped,
     filterReasons: discovery.filterReasons,
     tokens: discovery.tokens,
     keepaError: discovery.error,

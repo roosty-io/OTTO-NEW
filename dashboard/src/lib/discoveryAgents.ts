@@ -22,6 +22,23 @@ export const KEEPA_PROFILES: KeepaProfileInfo[] = [
   { name: 'exploratory', minRankImprovementPercent: 0, minAmazonPrice: 5, maxAmazonPrice: 300, diagnosticsOnly: true },
 ];
 
+// Mirrors src/config/keepaStrategies.ts (backend) for display only. Strategies
+// are Product Finder query shapes; running --strategy=all unions + dedupes them
+// to increase candidate volume. They tune Keepa INPUT only — gates unchanged.
+export interface KeepaStrategyInfo {
+  name: string;
+  description: string;
+}
+
+export const KEEPA_STRATEGIES: KeepaStrategyInfo[] = [
+  { name: 'rank_drops_30d', description: '≥1 sales-rank drop in 30d, within rank ceiling + price range.' },
+  { name: 'rank_drops_90d', description: '≥1 sales-rank drop in 90d; surfaces slower-burn movers.' },
+  { name: 'current_rank_only', description: 'No movement requirement at query level; profile filters still score/reject.' },
+  { name: 'category_movers', description: 'Best-ranked recent movers within each safe category.' },
+  { name: 'price_band_movers', description: 'Separate queries per price band ($10-25/25-50/50-100/100-200) for breadth.' },
+  { name: 'review_quality_movers', description: 'Products with solid rating/review signals (rating ≥ 4.0, reviews ≥ 50).' },
+];
+
 export interface DiscoveryAgentInfo {
   name: string;
   implemented: ImplementedStatus;
@@ -50,10 +67,10 @@ export const DISCOVERY_AGENTS: DiscoveryAgentInfo[] = [
     implemented: 'real',
     dataSource: 'Keepa API (/query Product Finder + /product stats)',
     requiresCredentials: 'KEEPA_API_KEY (+ eBay creds for demand scoring)',
-    testCommand: 'run:keepa-discovery --profile=strict|balanced|broad|exploratory; calibrate:keepa-discovery',
-    lastSuccessfulRun: 'Real endpoint confirmed (12 ASINs, 80 tokens); calibration profiles added',
+    testCommand: 'run:keepa-discovery --profile=… --strategy=all|<name> [--max-keepa-tokens=N] [--force]; calibrate:keepa-discovery',
+    lastSuccessfulRun: 'Real endpoint confirmed (12 ASINs, 80 tokens); profiles + multi-strategy Product Finder added',
     priority: null,
-    notes: 'LIVE. ASIN-native: pulls rising-rank Amazon products from Keepa, bypasses the ASIN resolver, routes through the full validation chain. Calibration profiles strict/balanced/broad/exploratory tune discovery input only (gates unchanged). Filter losses are reported with KEEPA_* reason codes. If the plan lacks Product Finder it reports KEEPA_PLAN_LIMITATION/KEEPA_ENDPOINT_UNAVAILABLE instead of faking candidates.',
+    notes: 'LIVE. ASIN-native: pulls rising-rank Amazon products from Keepa, bypasses the ASIN resolver, routes through the full validation chain. Profiles (strict/balanced/broad/exploratory) and Product Finder strategies (rank_drops_30d, rank_drops_90d, current_rank_only, category_movers, price_band_movers, review_quality_movers, all) tune discovery input only — gates unchanged. --strategy=all unions + dedupes strategies to raise candidate volume; a token guard (--max-keepa-tokens, env KEEPA_DISCOVERY_MAX_TOKENS_PER_RUN, override with --force) stops expensive runs. Filter losses are reported with KEEPA_* reason codes. If the plan lacks Product Finder it reports KEEPA_PLAN_LIMITATION/KEEPA_ENDPOINT_UNAVAILABLE instead of faking candidates.',
   },
   {
     name: 'Amazon Best Sellers',
