@@ -20,6 +20,7 @@
     "test:compliance": "ts-node -T -r tsconfig-paths/register src/scripts/test-compliance.ts",
     "test:shipping-gate": "ts-node -T -r tsconfig-paths/register src/scripts/test-shipping-gate.ts",
     "test:competition-quality": "ts-node -T -r tsconfig-paths/register src/scripts/test-competition-quality.ts",
+    "test:cross-batch-filter": "ts-node -T -r tsconfig-paths/register src/scripts/test-cross-batch-filter.ts",
     "test:resolver-retry": "ts-node -T -r tsconfig-paths/register src/scripts/test-resolver-retry.ts",
     "test:amazon-resolver-reliability": "ts-node -T -r tsconfig-paths/register src/scripts/test-amazon-resolver-reliability.ts",
     "audit:competition-gate": "ts-node -T -r tsconfig-paths/register src/scripts/audit-competition-gate.ts",

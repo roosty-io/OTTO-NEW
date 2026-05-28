@@ -45,7 +45,8 @@ expose it on your `*.replit.dev` host.
 | `/rejected` | Rejected Products | `rejected_products` + reason-count bar chart (top 15). |
 | `/competition` | Competition Review | Products flagged with HIGH_DUPLICATE_MARKET / HIGH_SELLER_COMPETITION / LOW_DIFFERENTIATION / SATURATED_GENERIC_PRODUCT / etc., with full competition scores. |
 | `/shipping` | Shipping Review | `amazon_source_checks` with `shipping_review_required=true`, `prime_likely_pass`, or near-window delivery. Surfaces all Prime / FBA / ships-from-amazon signals. |
-| `/exports` | Export Center | `export_batches` with pre/post-dedupe counts and copy-able CSV + manual QA paths. |
+| `/exports` | Export Center | `export_batches` with pre-dedupe, same-batch dupes, cross-batch repeats removed, exported-after-all-filters counts, repeat policy/lookback, and copy-able CSV + manual QA paths. |
+| `/exclusions` | Export Exclusions | `export_exclusions` - ASINs skipped by the cross-batch repeat filter (PREVIOUSLY_EXPORTED_ASIN / PREVIOUSLY_EXPORTED_RECENTLY), with prior batch + prior export date. |
 | `/manual-qa` | Manual QA | `manual_qa_reviews` grouped by `batch_label`. Approval rate, asin-real / demand / low-risk rates, PASS / HOLD verdict. |
 | `/agent-logs` | Agent Logs | `agent_logs` + `agent_votes` tabbed view with agent / product / level filters. |
 | `/discovery-agents` | Discovery Agents | Static manifest of every planned discovery agent + its implementation status (real / partial / placeholder). |

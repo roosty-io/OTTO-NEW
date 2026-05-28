@@ -46,25 +46,54 @@ export function ExportCenter() {
       className: 'text-right tabular-nums',
     },
     {
-      key: 'removed',
-      header: 'Dup removed',
+      key: 'same_batch',
+      header: 'Same-batch dups',
       sortable: true,
-      sortValue: (r) => r.duplicate_asins_removed,
-      cell: (r) => fmtNum(r.duplicate_asins_removed),
+      sortValue: (r) => r.same_batch_duplicates_removed ?? r.duplicate_asins_removed,
+      cell: (r) => fmtNum(r.same_batch_duplicates_removed ?? r.duplicate_asins_removed),
       className: 'text-right tabular-nums',
     },
     {
-      key: 'after',
-      header: 'Exported',
+      key: 'cross_batch',
+      header: 'Cross-batch repeats',
       sortable: true,
-      sortValue: (r) => r.final_exported_after_dedupe ?? r.row_count,
-      cell: (r) => <span className="font-medium tabular-nums">{fmtNum(r.final_exported_after_dedupe ?? r.row_count)}</span>,
+      sortValue: (r) => r.cross_batch_repeats_removed ?? 0,
+      cell: (r) => {
+        const n = r.cross_batch_repeats_removed ?? 0;
+        return <span className={n > 0 ? 'text-warn tabular-nums' : 'tabular-nums'}>{fmtNum(n)}</span>;
+      },
       className: 'text-right',
+    },
+    {
+      key: 'after',
+      header: 'After all filters',
+      sortable: true,
+      sortValue: (r) => r.exported_after_all_filters ?? r.final_exported_after_dedupe ?? r.row_count,
+      cell: (r) => <span className="font-medium tabular-nums">{fmtNum(r.exported_after_all_filters ?? r.final_exported_after_dedupe ?? r.row_count)}</span>,
+      className: 'text-right',
+    },
+    {
+      key: 'repeat_policy',
+      header: 'Repeat policy',
+      sortable: true,
+      sortValue: (r) => r.repeat_policy ?? '',
+      cell: (r) => {
+        if (!r.repeat_policy) return <span className="text-muted">—</span>;
+        const lookback = r.repeat_policy === 'exclude_recent' && r.repeat_lookback_days != null
+          ? ` (${r.repeat_lookback_days}d)`
+          : '';
+        return <span className="text-xs text-muted">{r.repeat_policy}{lookback}</span>;
+      },
     },
     {
       key: 'status',
       header: 'Status',
-      cell: (r) => <Badge tone={r.status === 'completed' ? 'good' : 'muted'}>{r.status}</Badge>,
+      cell: (r) => (
+        <div className="flex items-center gap-1">
+          <Badge tone={r.status === 'completed' ? 'good' : 'muted'}>{r.status}</Badge>
+          {r.is_synthetic && <Badge tone="muted">synthetic</Badge>}
+        </div>
+      ),
     },
     {
       key: 'paths',

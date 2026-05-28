@@ -6,6 +6,7 @@ import { RejectedProducts } from './pages/RejectedProducts';
 import { CompetitionReview } from './pages/CompetitionReview';
 import { ShippingReview } from './pages/ShippingReview';
 import { ExportCenter } from './pages/ExportCenter';
+import { ExportExclusions } from './pages/ExportExclusions';
 import { ManualQA } from './pages/ManualQA';
 import { AgentLogs } from './pages/AgentLogs';
 import { DiscoveryAgents } from './pages/DiscoveryAgents';
@@ -20,6 +21,7 @@ export default function App() {
       <Route path="/competition" element={<CompetitionReview />} />
       <Route path="/shipping" element={<ShippingReview />} />
       <Route path="/exports" element={<ExportCenter />} />
+      <Route path="/exclusions" element={<ExportExclusions />} />
       <Route path="/manual-qa" element={<ManualQA />} />
       <Route path="/agent-logs" element={<AgentLogs />} />
       <Route path="/discovery-agents" element={<DiscoveryAgents />} />

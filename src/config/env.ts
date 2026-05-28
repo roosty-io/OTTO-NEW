@@ -65,6 +65,11 @@ export const env = {
     defaultMaxDeliveryDays: num('DEFAULT_MAX_DELIVERY_DAYS', 10),
     defaultMarketplaceTarget: str('DEFAULT_MARKETPLACE_TARGET', 'EBAY_US'),
   },
+  export: {
+    // Cross-batch repeat policy: allow_repeats | exclude_recent | never_repeat
+    repeatPolicy: str('EXPORT_REPEAT_POLICY', 'exclude_recent'),
+    repeatLookbackDays: num('EXPORT_REPEAT_LOOKBACK_DAYS', 30),
+  },
   runtime: {
     mockMode: bool('OTTO_MOCK_MODE', false),
     realEbayDiscovery: bool('OTTO_REAL_EBAY_DISCOVERY', false),

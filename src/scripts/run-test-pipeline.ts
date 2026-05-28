@@ -238,8 +238,15 @@ async function main(): Promise<void> {
   // 8. Export.  CsvExportAgent writes the canonical CSV, the manual QA
   // CSV, and upserts kept products into validated_products.  isSynthetic
   // marks these test-pipeline rows so the dashboard filters them out.
+  // allow_repeats keeps the synthetic smoke run deterministic and
+  // isolated from cross-batch history.
   const exporter = new CsvExportAgent();
-  const exportResult = await exporter.run({ products: validated, discoveryRunId: runId, isSynthetic: true });
+  const exportResult = await exporter.run({
+    products: validated,
+    discoveryRunId: runId,
+    isSynthetic: true,
+    repeatPolicy: 'allow_repeats',
+  });
   stats.csvPath = exportResult.data.filePath;
 
   try {

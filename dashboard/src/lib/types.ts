@@ -15,7 +15,12 @@ export interface ExportBatch {
   row_count: number;
   final_validated_before_dedupe: number | null;
   duplicate_asins_removed: number | null;
+  same_batch_duplicates_removed: number | null;
+  cross_batch_repeats_removed: number | null;
   final_exported_after_dedupe: number | null;
+  exported_after_all_filters: number | null;
+  repeat_policy: string | null;
+  repeat_lookback_days: number | null;
   status: string;
   created_at: string;
   is_synthetic: boolean;
@@ -205,9 +210,28 @@ export interface LatestRun {
     businessFitFailed: number;
     finalValidatedBeforeDedupe: number;
     duplicateAsinsRemoved: number;
+    sameBatchDuplicatesRemoved: number;
+    crossBatchRepeatsRemoved: number;
+    exportedAfterAllFilters: number;
+    repeatPolicy: string | null;
+    repeatLookbackDays: number | null;
     endToEndPassRate: number;
     shippingReviewRequired: number;
     topRejectionReason: string | null;
     latestManualQaApprovalRate: number | null;
   };
+}
+
+export interface ExportExclusion {
+  id: string;
+  export_batch_id: string | null;
+  discovery_run_id: string | null;
+  otto_product_id: string | null;
+  asin: string;
+  exclusion_reason: string;
+  repeat_policy: string;
+  lookback_days: number | null;
+  prior_export_batch_id: string | null;
+  prior_exported_at: string | null;
+  created_at: string;
 }

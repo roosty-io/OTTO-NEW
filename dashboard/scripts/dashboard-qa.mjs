@@ -24,6 +24,7 @@ const ROUTES = [
   { path: '/competition',      name: 'Competition Review' },
   { path: '/shipping',         name: 'Shipping Review' },
   { path: '/exports',          name: 'Export Center' },
+  { path: '/exclusions',       name: 'Export Exclusions' },
   { path: '/manual-qa',        name: 'Manual QA' },
   { path: '/agent-logs',       name: 'Agent Logs' },
   { path: '/discovery-agents', name: 'Discovery Agents' },

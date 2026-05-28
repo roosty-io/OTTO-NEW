@@ -4,6 +4,14 @@ import { logger } from '@/utils/logger';
 import { env } from '@/config/env';
 import { writeCsv } from '@/utils/csv';
 import { makeResult, persistAgentLog, persistAgentResult } from '@/agents/baseAgent';
+import { RejectionReason } from '@/utils/rejectionReasons';
+import {
+  filterCrossBatch,
+  normalizeRepeatPolicy,
+  type CrossBatchExclusion,
+  type PriorExport,
+  type RepeatPolicy,
+} from '@/agents/export/crossBatchFilter';
 import type { AgentResult } from '@/types/agent';
 import type { ValidatedProduct } from '@/types/product';
 
@@ -115,6 +123,13 @@ export interface CsvExportInput {
    * dashboard can filter them out.  Defaults to false.
    */
   isSynthetic?: boolean;
+  /**
+   * Cross-batch repeat policy.  Defaults to env.export.repeatPolicy.
+   * allow_repeats | exclude_recent | never_repeat.
+   */
+  repeatPolicy?: RepeatPolicy;
+  /** Lookback window for exclude_recent. Defaults to env.export.repeatLookbackDays. */
+  repeatLookbackDays?: number;
 }
 
 export interface DedupeRemoval {
@@ -138,11 +153,21 @@ export interface CsvExportData {
   rowCount: number;
   exportBatchId: string;
   finalValidatedBeforeDedupe: number;
+  /** Same-batch ASIN duplicates removed (alias: duplicateAsinsRemoved). */
   duplicateAsinsRemoved: number;
+  sameBatchDuplicatesRemoved: number;
+  /** Survivors of same-batch dedupe, before cross-batch filtering. */
   finalExportedAfterDedupe: number;
+  /** ASINs dropped because they were already exported in earlier batches. */
+  crossBatchRepeatsRemoved: number;
+  /** Rows actually written / persisted after all filters. */
+  exportedAfterAllFilters: number;
+  repeatPolicy: RepeatPolicy;
+  repeatLookbackDays: number;
   persistedRowCount: number;
   failedPersistenceCount: number;
   removedDuplicates: DedupeRemoval[];
+  crossBatchExclusions: CrossBatchExclusion[];
 }
 
 export class CsvExportAgent {
@@ -157,20 +182,48 @@ export class CsvExportAgent {
     const filename = `otto-validated-${stamp}.csv`;
     const manualQaFilename = `otto_manual_qa_review_${exportedAt.slice(0, 10)}.csv`;
 
-    const finalValidatedBeforeDedupe = input.products.length;
-    const { keptProducts, removals } = dedupeByAsin(input.products);
-    const duplicateAsinsRemoved = removals.length;
-    const finalExportedAfterDedupe = keptProducts.length;
+    const repeatPolicy = normalizeRepeatPolicy(
+      input.repeatPolicy ?? env.export.repeatPolicy,
+    );
+    const repeatLookbackDays = input.repeatLookbackDays ?? env.export.repeatLookbackDays;
 
-    if (duplicateAsinsRemoved > 0) {
+    // ---------- 1. Same-batch ASIN dedupe ----------
+    const finalValidatedBeforeDedupe = input.products.length;
+    const { keptProducts: dedupedProducts, removals } = dedupeByAsin(input.products);
+    const sameBatchDuplicatesRemoved = removals.length;
+    const finalExportedAfterDedupe = dedupedProducts.length;
+
+    if (sameBatchDuplicatesRemoved > 0) {
       await this.persistRemovals(removals, exportBatchId, input.discoveryRunId);
     }
 
-    // ---------- Canonical CSV ----------
+    // ---------- 2. Cross-batch repeat filtering ----------
+    const priorExports = await this.fetchPriorExports(
+      dedupedProducts.map((p) => p.asin),
+      repeatPolicy,
+    );
+    const { keptProducts, exclusions } = filterCrossBatch({
+      products: dedupedProducts,
+      priorExports,
+      policy: repeatPolicy,
+      lookbackDays: repeatLookbackDays,
+    });
+    const crossBatchRepeatsRemoved = exclusions.length;
+    if (crossBatchRepeatsRemoved > 0) {
+      await this.persistCrossBatchExclusions(
+        exclusions,
+        exportBatchId,
+        input.discoveryRunId,
+        repeatPolicy,
+        repeatLookbackDays,
+      );
+    }
+
+    // ---------- 3. Canonical CSV ----------
     const csvRows = keptProducts.map((p) => mapToExportRow(p, exportBatchId));
     const { filePath, rowCount } = writeCsv(env.exportDir, filename, EXPORT_COLUMNS, csvRows);
 
-    // ---------- Manual QA CSV ----------
+    // ---------- 4. Manual QA CSV ----------
     const qaRows = keptProducts.map(mapToManualQaRow);
     const { filePath: manualQaCsvPath } = writeCsv(
       env.exportDir,
@@ -179,7 +232,7 @@ export class CsvExportAgent {
       qaRows,
     );
 
-    // ---------- export_batches row ----------
+    // ---------- 5. export_batches row ----------
     try {
       await supabase.from('export_batches').insert({
         id: exportBatchId,
@@ -187,8 +240,13 @@ export class CsvExportAgent {
         file_path: filePath,
         row_count: rowCount,
         final_validated_before_dedupe: finalValidatedBeforeDedupe,
-        duplicate_asins_removed: duplicateAsinsRemoved,
+        duplicate_asins_removed: sameBatchDuplicatesRemoved,
+        same_batch_duplicates_removed: sameBatchDuplicatesRemoved,
+        cross_batch_repeats_removed: crossBatchRepeatsRemoved,
         final_exported_after_dedupe: finalExportedAfterDedupe,
+        exported_after_all_filters: rowCount,
+        repeat_policy: repeatPolicy,
+        repeat_lookback_days: repeatLookbackDays,
         status: 'completed',
         is_synthetic: Boolean(input.isSynthetic),
       });
@@ -196,7 +254,7 @@ export class CsvExportAgent {
       this.log.warn('export_batches insert failed', { err: (err as Error).message });
     }
 
-    // ---------- validated_products upsert ----------
+    // ---------- 6. validated_products upsert ----------
     const persistResult = await this.persistExportedProducts(
       keptProducts,
       exportBatchId,
@@ -217,8 +275,12 @@ export class CsvExportAgent {
         rowCount,
         exportBatchId,
         finalValidatedBeforeDedupe,
-        duplicateAsinsRemoved,
+        sameBatchDuplicatesRemoved,
+        crossBatchRepeatsRemoved,
         finalExportedAfterDedupe,
+        exportedAfterAllFilters: rowCount,
+        repeatPolicy,
+        repeatLookbackDays,
         persistedRowCount: persistResult.persisted,
         failedPersistenceCount: persistResult.failed,
       },
@@ -230,11 +292,17 @@ export class CsvExportAgent {
       rowCount,
       exportBatchId,
       finalValidatedBeforeDedupe,
-      duplicateAsinsRemoved,
+      duplicateAsinsRemoved: sameBatchDuplicatesRemoved,
+      sameBatchDuplicatesRemoved,
       finalExportedAfterDedupe,
+      crossBatchRepeatsRemoved,
+      exportedAfterAllFilters: rowCount,
+      repeatPolicy,
+      repeatLookbackDays,
       persistedRowCount: persistResult.persisted,
       failedPersistenceCount: persistResult.failed,
       removedDuplicates: removals,
+      crossBatchExclusions: exclusions,
     };
     const result = makeResult(
       this.name,
@@ -243,13 +311,112 @@ export class CsvExportAgent {
       rowCount,
       [
         `Wrote ${rowCount} rows to CSV`,
-        `${duplicateAsinsRemoved} duplicate ASIN(s) removed (kept ${finalExportedAfterDedupe} of ${finalValidatedBeforeDedupe})`,
+        `${sameBatchDuplicatesRemoved} same-batch duplicate ASIN(s) removed (kept ${finalExportedAfterDedupe} of ${finalValidatedBeforeDedupe})`,
+        `${crossBatchRepeatsRemoved} cross-batch repeat(s) removed (policy=${repeatPolicy}, lookback=${repeatLookbackDays}d)`,
         `Persisted ${persistResult.persisted}/${rowCount} to validated_products (${persistResult.failed} failed)`,
       ],
       data,
     );
     await persistAgentResult(result, input.discoveryRunId);
     return result;
+  }
+
+  /**
+   * Fetch prior exports (non-synthetic) for the given ASINs so the
+   * cross-batch filter can decide which to drop.  Returns an empty list
+   * for allow_repeats (no query needed) or when there are no ASINs.
+   */
+  private async fetchPriorExports(asins: string[], policy: RepeatPolicy): Promise<PriorExport[]> {
+    if (policy === 'allow_repeats') return [];
+    const unique = [...new Set(asins.map((a) => (a ?? '').trim()).filter(Boolean))];
+    if (unique.length === 0) return [];
+    const supabase = getSupabase();
+    try {
+      const { data, error } = await supabase
+        .from('validated_products')
+        .select('asin, export_batch_id, exported_at, validated_at, is_synthetic')
+        .eq('is_synthetic', false)
+        .in('asin', unique);
+      if (error) {
+        this.log.warn('fetchPriorExports failed; treating as no prior exports', { err: error.message });
+        return [];
+      }
+      return ((data ?? []) as {
+        asin: string;
+        export_batch_id: string | null;
+        exported_at: string | null;
+        validated_at: string | null;
+      }[]).map((r) => ({
+        asin: r.asin,
+        exportBatchId: r.export_batch_id,
+        exportedAt: r.exported_at ?? r.validated_at ?? null,
+      }));
+    } catch (err) {
+      this.log.warn('fetchPriorExports threw; treating as no prior exports', { err: (err as Error).message });
+      return [];
+    }
+  }
+
+  private async persistCrossBatchExclusions(
+    exclusions: CrossBatchExclusion[],
+    exportBatchId: string,
+    runId: string | undefined,
+    repeatPolicy: RepeatPolicy,
+    lookbackDays: number,
+  ): Promise<void> {
+    const supabase = getSupabase();
+    const rows = exclusions.map((e) => ({
+      export_batch_id: exportBatchId,
+      discovery_run_id: runId ?? null,
+      otto_product_id: e.ottoProductId,
+      asin: e.asin,
+      exclusion_reason: e.exclusionReason,
+      repeat_policy: repeatPolicy,
+      lookback_days: lookbackDays,
+      prior_export_batch_id: e.priorExportBatchId,
+      prior_exported_at: e.priorExportedAt,
+    }));
+    try {
+      await supabase.from('export_exclusions').insert(rows);
+    } catch (err) {
+      this.log.warn('export_exclusions insert failed', { err: (err as Error).message });
+    }
+    // Also record a rejected_products row + agent log per exclusion so
+    // the existing rejection analytics surface them.
+    const rejectionRows = exclusions.map((e) => ({
+      otto_product_id: e.ottoProductId,
+      stage: 'export',
+      reason: RejectionReason.CROSS_BATCH_DEDUPED_ASIN,
+      details: {
+        asin: e.asin,
+        exclusionReason: e.exclusionReason,
+        priorExportBatchId: e.priorExportBatchId,
+        priorExportedAt: e.priorExportedAt,
+        repeatPolicy,
+        lookbackDays,
+      },
+    }));
+    try {
+      await supabase.from('rejected_products').insert(rejectionRows);
+    } catch (err) {
+      this.log.warn('rejected_products (cross-batch) insert failed', { err: (err as Error).message });
+    }
+    for (const e of exclusions) {
+      await persistAgentLog({
+        agentName: this.name,
+        productId: e.ottoProductId,
+        runId,
+        level: 'info',
+        message: e.exclusionReason,
+        data: {
+          asin: e.asin,
+          priorExportBatchId: e.priorExportBatchId,
+          priorExportedAt: e.priorExportedAt,
+          repeatPolicy,
+          lookbackDays,
+        },
+      });
+    }
   }
 
   /**

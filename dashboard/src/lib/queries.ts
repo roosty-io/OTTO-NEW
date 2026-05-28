@@ -8,6 +8,7 @@ import type {
   BusinessFitCheck,
   DiscoveryRun,
   ExportBatch,
+  ExportExclusion,
   LatestRun,
   ManualQaReview,
   RejectedProduct,
@@ -169,7 +170,13 @@ export function useLatestRun() {
           finalValidated: finalValidatedForChart,
           finalValidatedBeforeDedupe: finalValidatedFromBatch,
           duplicateAsinsRemoved: latestBatch.duplicate_asins_removed ?? 0,
+          sameBatchDuplicatesRemoved:
+            latestBatch.same_batch_duplicates_removed ?? latestBatch.duplicate_asins_removed ?? 0,
+          crossBatchRepeatsRemoved: latestBatch.cross_batch_repeats_removed ?? 0,
           exportedAfterDedupe: latestBatch.final_exported_after_dedupe ?? latestBatch.row_count,
+          exportedAfterAllFilters: latestBatch.exported_after_all_filters ?? latestBatch.row_count,
+          repeatPolicy: latestBatch.repeat_policy ?? null,
+          repeatLookbackDays: latestBatch.repeat_lookback_days ?? null,
           endToEndPassRate,
           shippingReviewRequired,
           topRejectionReason: topRejection ? `${topRejection[0]} (${topRejection[1]})` : null,
@@ -228,7 +235,12 @@ function emptyMetrics(): LatestRun['metrics'] {
     finalValidated: 0,
     finalValidatedBeforeDedupe: 0,
     duplicateAsinsRemoved: 0,
+    sameBatchDuplicatesRemoved: 0,
+    crossBatchRepeatsRemoved: 0,
     exportedAfterDedupe: 0,
+    exportedAfterAllFilters: 0,
+    repeatPolicy: null,
+    repeatLookbackDays: null,
     endToEndPassRate: 0,
     shippingReviewRequired: 0,
     topRejectionReason: null,
@@ -354,6 +366,13 @@ export function useExportBatches(limit = 50) {
   return useQuery<ExportBatch[]>({
     queryKey: ['export_batches', limit],
     queryFn: () => fetchTable('export_batches', { order: { col: 'created_at', ascending: false }, limit }),
+  });
+}
+
+export function useExportExclusions(limit = 500) {
+  return useQuery<ExportExclusion[]>({
+    queryKey: ['export_exclusions', limit],
+    queryFn: () => fetchTable('export_exclusions', { order: { col: 'created_at', ascending: false }, limit }),
   });
 }
 

@@ -38,6 +38,12 @@ import { BusinessFitAgent } from '@/agents/businessFit/BusinessFitAgent';
 import { CostCalculationAgent } from '@/agents/cost/CostCalculationAgent';
 import { FinalValidationAgent } from '@/agents/validation/FinalValidationAgent';
 import { CsvExportAgent, dedupeByAsin } from '@/agents/export/CsvExportAgent';
+import {
+  isRepeatPolicy,
+  normalizeRepeatPolicy,
+  type CrossBatchExclusion,
+  type RepeatPolicy,
+} from '@/agents/export/crossBatchFilter';
 
 import type { ValidatedProduct } from '@/types/product';
 
@@ -71,7 +77,12 @@ interface PipelineStats {
   finalRejected: number;
   finalValidatedBeforeDedupe: number;
   duplicateAsinsRemoved: number;
+  sameBatchDuplicatesRemoved: number;
+  crossBatchRepeatsRemoved: number;
   finalExportedAfterDedupe: number;
+  exportedAfterAllFilters: number;
+  repeatPolicy: string;
+  repeatLookbackDays: number;
   exportedCount: number;
   rejectionCounts: Record<string, number>;
   // Shipping gate breakdown (over Amazon-source-checked products)
@@ -156,7 +167,12 @@ async function main(): Promise<void> {
     finalRejected: 0,
     finalValidatedBeforeDedupe: 0,
     duplicateAsinsRemoved: 0,
+    sameBatchDuplicatesRemoved: 0,
+    crossBatchRepeatsRemoved: 0,
     finalExportedAfterDedupe: 0,
+    exportedAfterAllFilters: 0,
+    repeatPolicy: args.repeatPolicy,
+    repeatLookbackDays: args.repeatLookbackDays,
     exportedCount: 0,
     rejectionCounts: {},
     shippingPass: 0,
@@ -438,11 +454,10 @@ async function main(): Promise<void> {
     });
   }
 
-  // 8. ASIN-level dedupe (single source of truth for both CSVs)
-  stats.finalValidatedBeforeDedupe = validated.length;
+  // 8. Local same-batch dedupe just for the on-screen "top products"
+  // panel; the CsvExportAgent is the authoritative source of export
+  // counts (it re-dedupes and then applies cross-batch filtering).
   const { keptProducts: dedupedProducts, removals } = dedupeByAsin(validated);
-  stats.duplicateAsinsRemoved = removals.length;
-  stats.finalExportedAfterDedupe = dedupedProducts.length;
   if (removals.length > 0) {
     log.info('Removed duplicate ASIN rows', {
       duplicateAsinsRemoved: removals.length,
@@ -450,11 +465,24 @@ async function main(): Promise<void> {
     });
   }
 
-  // 9. Export.  CsvExportAgent re-dedupes defensively (no-op here),
-  // writes the canonical CSV + manual QA CSV, persists to
-  // validated_products, and records the export_batches row.
+  // 9. Export.  CsvExportAgent does same-batch dedupe + cross-batch
+  // repeat filtering, writes the canonical CSV + manual QA CSV,
+  // persists to validated_products, and records the export_batches row.
   const exporter = new CsvExportAgent();
-  const exportResult = await exporter.run({ products: dedupedProducts, discoveryRunId: runId });
+  const exportResult = await exporter.run({
+    products: validated,
+    discoveryRunId: runId,
+    repeatPolicy: args.repeatPolicy,
+    repeatLookbackDays: args.repeatLookbackDays,
+  });
+  stats.finalValidatedBeforeDedupe = exportResult.data.finalValidatedBeforeDedupe;
+  stats.duplicateAsinsRemoved = exportResult.data.sameBatchDuplicatesRemoved;
+  stats.sameBatchDuplicatesRemoved = exportResult.data.sameBatchDuplicatesRemoved;
+  stats.crossBatchRepeatsRemoved = exportResult.data.crossBatchRepeatsRemoved;
+  stats.finalExportedAfterDedupe = exportResult.data.finalExportedAfterDedupe;
+  stats.exportedAfterAllFilters = exportResult.data.exportedAfterAllFilters;
+  stats.repeatPolicy = exportResult.data.repeatPolicy;
+  stats.repeatLookbackDays = exportResult.data.repeatLookbackDays;
   stats.exportedCount = exportResult.data.rowCount;
   const qaPath = exportResult.data.manualQaCsvPath;
 
@@ -477,6 +505,7 @@ async function main(): Promise<void> {
     // Use the deduped set so the "top passing products" panel and the
     // Markdown report match the rows actually written to the CSV.
     validated: dedupedProducts,
+    crossBatchExclusions: exportResult.data.crossBatchExclusions,
   };
   printSummary(summaryArgs);
   const nextAction = summarizeNextAction(stats);
@@ -497,10 +526,17 @@ async function main(): Promise<void> {
   }
 }
 
-function parseArgs(): { keywords: string[]; limit: number } {
+function parseArgs(): {
+  keywords: string[];
+  limit: number;
+  repeatPolicy: RepeatPolicy;
+  repeatLookbackDays: number;
+} {
   const args = process.argv.slice(2);
   let keywords = DEFAULT_KEYWORDS;
   let limit = DEFAULT_LIMIT;
+  let repeatPolicy = normalizeRepeatPolicy(env.export.repeatPolicy);
+  let repeatLookbackDays = env.export.repeatLookbackDays;
   for (const a of args) {
     if (a.startsWith('--limit=')) {
       const n = Number(a.split('=')[1]);
@@ -509,9 +545,18 @@ function parseArgs(): { keywords: string[]; limit: number } {
       const raw = a.substring('--keywords='.length).trim().replace(/^"|"$/g, '');
       const parts = raw.split(',').map((k) => k.trim()).filter(Boolean);
       if (parts.length > 0) keywords = parts;
+    } else if (a === '--allow-repeats') {
+      repeatPolicy = 'allow_repeats';
+    } else if (a.startsWith('--repeat-policy=')) {
+      const raw = a.substring('--repeat-policy='.length).trim();
+      if (isRepeatPolicy(raw)) repeatPolicy = raw;
+      else log.warn(`Ignoring unknown --repeat-policy=${raw}; using ${repeatPolicy}`);
+    } else if (a.startsWith('--repeat-lookback-days=')) {
+      const n = Number(a.split('=')[1]);
+      if (Number.isFinite(n) && n >= 0) repeatLookbackDays = Math.trunc(n);
     }
   }
-  return { keywords, limit };
+  return { keywords, limit, repeatPolicy, repeatLookbackDays };
 }
 
 function printSummary(args: {
@@ -521,6 +566,7 @@ function printSummary(args: {
   qaPath: string;
   stats: PipelineStats;
   validated: ValidatedProduct[];
+  crossBatchExclusions?: CrossBatchExclusion[];
 }): void {
   const { stats, validated } = args;
   const passRate = stats.rawCandidates > 0
@@ -545,11 +591,15 @@ function printSummary(args: {
   console.log(`  cost calculated      : ${stats.costCalculated}`);
   console.log(`  final validated      : ${stats.finalValidated}`);
   console.log(`  final rejected       : ${stats.finalRejected}`);
-  console.log(`  ----- export dedupe -----`);
-  console.log(`  validated before dedupe : ${stats.finalValidatedBeforeDedupe}`);
-  console.log(`  duplicate ASINs removed : ${stats.duplicateAsinsRemoved}`);
-  console.log(`  exported after dedupe   : ${stats.finalExportedAfterDedupe}`);
-  console.log(`  exported count       : ${stats.exportedCount}`);
+  console.log(`  ----- export dedupe + cross-batch -----`);
+  console.log(`  validated before dedupe   : ${stats.finalValidatedBeforeDedupe}`);
+  console.log(`  same-batch dupes removed  : ${stats.sameBatchDuplicatesRemoved}`);
+  console.log(`  after same-batch dedupe   : ${stats.finalExportedAfterDedupe}`);
+  console.log(`  cross-batch repeats removed: ${stats.crossBatchRepeatsRemoved}`);
+  console.log(`  exported after all filters: ${stats.exportedAfterAllFilters}`);
+  console.log(`  repeat policy             : ${stats.repeatPolicy}`);
+  console.log(`  repeat lookback days      : ${stats.repeatLookbackDays}`);
+  console.log(`  exported count            : ${stats.exportedCount}`);
   console.log(`  ----- shipping gate -----`);
   console.log(`  shipping pass        : ${stats.shippingPass}`);
   console.log(`  prime-likely pass    : ${stats.shippingPrimeLikelyPass}`);
@@ -778,6 +828,7 @@ interface SuccessReportArgs {
   qaPath: string;
   stats: PipelineStats;
   validated: ValidatedProduct[];
+  crossBatchExclusions?: CrossBatchExclusion[];
 }
 
 function writeReport(args: SuccessReportArgs): string {
@@ -820,11 +871,32 @@ function writeReport(args: SuccessReportArgs): string {
   lines.push(`| final validated | ${args.stats.finalValidated} |`);
   lines.push(`| final rejected | ${args.stats.finalRejected} |`);
   lines.push(`| final validated before dedupe | ${args.stats.finalValidatedBeforeDedupe} |`);
-  lines.push(`| duplicate ASINs removed | ${args.stats.duplicateAsinsRemoved} |`);
-  lines.push(`| exported after dedupe | ${args.stats.finalExportedAfterDedupe} |`);
+  lines.push(`| same-batch duplicates removed | ${args.stats.sameBatchDuplicatesRemoved} |`);
+  lines.push(`| after same-batch dedupe | ${args.stats.finalExportedAfterDedupe} |`);
+  lines.push(`| cross-batch repeats removed | ${args.stats.crossBatchRepeatsRemoved} |`);
+  lines.push(`| exported after all filters | ${args.stats.exportedAfterAllFilters} |`);
   lines.push(`| exported count | ${args.stats.exportedCount} |`);
   lines.push(`| end-to-end pass rate | ${passRate}% |`);
   lines.push('');
+  lines.push(`## Cross-batch repeat filtering`);
+  lines.push('');
+  lines.push(`| Metric | Value |`);
+  lines.push(`| --- | --- |`);
+  lines.push(`| repeat policy | \`${args.stats.repeatPolicy}\` |`);
+  lines.push(`| repeat lookback days | ${args.stats.repeatLookbackDays} |`);
+  lines.push(`| cross-batch repeats removed | ${args.stats.crossBatchRepeatsRemoved} |`);
+  lines.push('');
+  const exclusions = args.crossBatchExclusions ?? [];
+  if (exclusions.length > 0) {
+    lines.push(`Top cross-batch excluded ASINs:`);
+    lines.push('');
+    lines.push(`| ASIN | reason | prior batch | prior exported at |`);
+    lines.push(`| --- | --- | --- | --- |`);
+    for (const e of exclusions.slice(0, 20)) {
+      lines.push(`| \`${e.asin}\` | ${e.exclusionReason} | ${e.priorExportBatchId ?? '—'} | ${e.priorExportedAt ?? '—'} |`);
+    }
+    lines.push('');
+  }
   lines.push(`## Shipping gate`);
   lines.push('');
   lines.push(`| Outcome | Count |`);

@@ -97,6 +97,43 @@ Removed rows are logged to `deduped_products` (with the kept ASIN, both
 records `final_validated_before_dedupe`, `duplicate_asins_removed`,
 and `final_exported_after_dedupe` for at-a-glance review.
 
+### Cross-batch repeat filtering
+
+After same-batch dedupe, `CsvExportAgent` also filters ASINs that were
+already exported in **earlier** batches, so the same product isn't
+re-listed across runs.  Only **non-synthetic** `validated_products` rows
+count as prior exports, so test-pipeline / mock rows never block real
+exports.
+
+Policy is set by `EXPORT_REPEAT_POLICY` (env) or per-run CLI flags:
+
+| Policy | Behavior |
+| --- | --- |
+| `allow_repeats` | only same-batch dedupe applies (old behavior) |
+| `exclude_recent` | drop ASINs exported within `EXPORT_REPEAT_LOOKBACK_DAYS` (default 30) — **the default** |
+| `never_repeat` | drop ASINs that ever appear in non-synthetic `validated_products` |
+
+```bash
+# default (exclude_recent, 30-day lookback)
+npm run run:real-qa -- --limit=25
+
+# restore old behavior for apples-to-apples QA
+npm run run:real-qa -- --limit=25 --allow-repeats
+
+# custom policy / window
+npm run run:real-qa -- --limit=25 --repeat-policy=exclude_recent --repeat-lookback-days=7
+npm run run:real-qa -- --limit=25 --repeat-policy=never_repeat
+```
+
+Excluded ASINs are written to `export_exclusions` (with the prior batch
+id + prior export date and the reason — `PREVIOUSLY_EXPORTED_ASIN` or
+`PREVIOUSLY_EXPORTED_RECENTLY`), recorded in `rejected_products` under
+`CROSS_BATCH_DEDUPED_ASIN`, and emit an `agent_logs` event.
+`export_batches` records `same_batch_duplicates_removed`,
+`cross_batch_repeats_removed`, `exported_after_all_filters`,
+`repeat_policy`, and `repeat_lookback_days`.  Unit cases:
+`npm run test:cross-batch-filter`.
+
 ### Manual QA review workflow
 
 After `npm run run:real-qa` finishes, open

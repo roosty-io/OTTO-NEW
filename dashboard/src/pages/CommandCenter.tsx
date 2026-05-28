@@ -50,9 +50,15 @@ function CommandCenterBody({ data }: { data: NonNullable<ReturnType<typeof useLa
           hint="Threshold to scale: ≥ 70%"
         />
         <Scorecard
-          label="Duplicate ASINs removed"
-          value={fmtNum(m.duplicateAsinsRemoved)}
-          tone={m.duplicateAsinsRemoved > 0 ? 'warn' : 'default'}
+          label="Same-batch dupes removed"
+          value={fmtNum(m.sameBatchDuplicatesRemoved)}
+          tone={m.sameBatchDuplicatesRemoved > 0 ? 'warn' : 'default'}
+        />
+        <Scorecard
+          label="Cross-batch repeats removed"
+          value={fmtNum(m.crossBatchRepeatsRemoved)}
+          tone={m.crossBatchRepeatsRemoved > 0 ? 'warn' : 'default'}
+          hint={m.repeatPolicy ? `policy: ${m.repeatPolicy}` : undefined}
         />
         <Scorecard
           label="Shipping review required"
@@ -97,8 +103,12 @@ function CommandCenterBody({ data }: { data: NonNullable<ReturnType<typeof useLa
               <KvRow label="business fit passed" value={fmtNum(m.businessFitPassed)} />
               <KvRow label="business fit failed" value={fmtNum(m.businessFitFailed)} />
               <KvRow label="final validated (pre-dedupe)" value={fmtNum(m.finalValidatedBeforeDedupe)} />
-              <KvRow label="duplicate ASINs removed" value={fmtNum(m.duplicateAsinsRemoved)} />
-              <KvRow label="exported after dedupe" value={fmtNum(m.exportedAfterDedupe)} />
+              <KvRow label="same-batch dupes removed" value={fmtNum(m.sameBatchDuplicatesRemoved)} />
+              <KvRow label="after same-batch dedupe" value={fmtNum(m.exportedAfterDedupe)} />
+              <KvRow label="cross-batch repeats removed" value={fmtNum(m.crossBatchRepeatsRemoved)} />
+              <KvRow label="exported after all filters" value={fmtNum(m.exportedAfterAllFilters)} />
+              <KvRow label="repeat policy" value={m.repeatPolicy ?? '—'} />
+              <KvRow label="repeat lookback days" value={m.repeatLookbackDays === null ? '—' : fmtNum(m.repeatLookbackDays)} />
             </div>
           </CardBody>
         </Card>

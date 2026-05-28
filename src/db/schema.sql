@@ -375,10 +375,30 @@ create table if not exists export_batches (
   row_count int not null default 0,
   final_validated_before_dedupe int default 0,
   duplicate_asins_removed int default 0,
+  same_batch_duplicates_removed int default 0,
+  cross_batch_repeats_removed int default 0,
   final_exported_after_dedupe int default 0,
+  exported_after_all_filters int default 0,
+  repeat_policy text,
+  repeat_lookback_days int,
   status text not null default 'completed',
   created_at timestamptz not null default now(),
   is_synthetic boolean not null default false
+);
+
+-- Cross-batch repeat exclusions (which ASINs were skipped and why)
+create table if not exists export_exclusions (
+  id uuid primary key default gen_random_uuid(),
+  export_batch_id uuid,
+  discovery_run_id uuid,
+  otto_product_id text,
+  asin text not null,
+  exclusion_reason text not null,
+  repeat_policy text not null,
+  lookback_days int,
+  prior_export_batch_id uuid,
+  prior_exported_at timestamptz,
+  created_at timestamptz not null default now()
 );
 
 create table if not exists deduped_products (
@@ -594,6 +614,9 @@ create index if not exists idx_validated_products_export_batch on validated_prod
 create index if not exists idx_validated_products_run on validated_products(discovery_run_id);
 create index if not exists idx_validated_products_synthetic on validated_products(is_synthetic);
 create index if not exists idx_export_batches_synthetic on export_batches(is_synthetic);
+create index if not exists idx_export_exclusions_batch on export_exclusions(export_batch_id);
+create index if not exists idx_export_exclusions_asin on export_exclusions(asin);
+create index if not exists idx_export_exclusions_reason on export_exclusions(exclusion_reason);
 create index if not exists idx_rejected_products_product on rejected_products(otto_product_id);
 create index if not exists idx_asin_candidates_product on asin_candidates(otto_product_id);
 create index if not exists idx_asin_candidates_accepted on asin_candidates(accepted);

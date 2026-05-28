@@ -137,7 +137,11 @@ async function resolveBatchIdForCsv(csvPath: string, csvRowCount: number, runIdH
     row_count: csvRowCount,
     final_validated_before_dedupe: csvRowCount,
     duplicate_asins_removed: 0,
+    same_batch_duplicates_removed: 0,
+    cross_batch_repeats_removed: 0,
     final_exported_after_dedupe: csvRowCount,
+    exported_after_all_filters: csvRowCount,
+    repeat_policy: 'allow_repeats',
     status: 'completed',
   });
   if (insertErr) {
