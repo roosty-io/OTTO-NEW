@@ -87,12 +87,14 @@ async function main(): Promise<void> {
   // --- live connectivity ---
   console.log('\n  --- connectivity ---');
   const supabase = await checkSupabase();
-  console.log(`    Supabase connection        : ${ok(supabase.connected)}`);
+  console.log(`    Supabase table query (discovery_runs): ${ok(supabase.connected)}`);
   const ebay = await checkEbay();
   console.log(`    eBay API (live token+search): ${ok(ebay.live)}`);
 
   // --- amazon page access ---
   let amazonStatus: AmazonEnvStatus = 'AMAZON_ENV_UNUSABLE';
+  // null = not attempted (e.g. --skip-amazon); true/false = persistence result.
+  let envCheckPersisted: boolean | null = null;
   if (skipAmazon) {
     console.log('\n  --- amazon ---\n    (skipped: --skip-amazon)');
   } else {
@@ -100,7 +102,10 @@ async function main(): Promise<void> {
     const report = await probeAmazonEnvironment({ closeBrowser: true });
     amazonStatus = report.status;
     console.log(`    Amazon environment         : ${amazonStatus} (loaded ${report.loaded}/${report.total}, proxy ${report.proxy.enabled ? 'enabled' : 'disabled'})`);
-    await persistAmazonEnvCheck(report, 'doctor:runtime');
+    // Separate signal from the table-query check above: this is the
+    // amazon_environment_checks *write* path (insert/persistence).
+    envCheckPersisted = await persistAmazonEnvCheck(report, 'doctor:runtime');
+    console.log(`    amazon_environment_checks persistence: ${ok(envCheckPersisted)}`);
   }
   const amazonUsable = amazonStatus === 'AMAZON_ENV_READY' || amazonStatus === 'AMAZON_ENV_PARTIAL';
 
@@ -118,7 +123,8 @@ async function main(): Promise<void> {
   if (!ebayQaReady || !keepaReady) {
     console.log('\n  Notes:');
     if (mockMode) console.log('   - OTTO_MOCK_MODE is true; set it to false for real jobs.');
-    if (!supabase.connected) console.log('   - Supabase not reachable; check SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY and network.');
+    if (!supabase.connected) console.log('   - Supabase table query failed; check SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY and network.');
+    if (supabase.connected && envCheckPersisted === false) console.log('   - Supabase table query works but amazon_environment_checks persistence (insert) failed; check the table exists and the service role can write to it.');
     if (!ebay.live) console.log('   - eBay API check failed; verify EBAY_CLIENT_ID / EBAY_CLIENT_SECRET and egress.');
     if (!skipAmazon && !amazonUsable) console.log(`   - Amazon page access is ${amazonStatus}. See AMAZON_ACCESS_RUNBOOK.md (configure a proxy or run where Amazon is reachable). Do NOT spend Keepa tokens until READY/PARTIAL.`);
     if (skipAmazon) console.log('   - Amazon was not verified (--skip-amazon); QA/Keepa readiness cannot be confirmed.');

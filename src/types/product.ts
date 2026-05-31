@@ -26,6 +26,12 @@ export interface ProductCandidate {
   asin?: string;
   amazonUrl?: string;
   sourceConfidenceScore?: number;
+  // Keepa multi-strategy discovery provenance (set by the discovery agent
+  // after deduping an ASIN across Product Finder strategies). discoveryScore
+  // above already carries the best score across the strategies that found it.
+  keepaStrategiesFound?: string[];
+  primaryKeepaStrategy?: string;
+  keepaStrategyCount?: number;
 }
 
 export interface ValidatedProduct {

@@ -10,12 +10,42 @@
  * Usage: npm run test:keepa-discovery
  */
 
-import { normalizeKeepaProduct, keepaDiscoveryScore } from '@/clients/keepaClient';
-import { isCategoryAllowed, resolveCategoryTargets, ALLOWED_V1_CATEGORIES } from '@/utils/keepaCategories';
+import { normalizeKeepaProduct, keepaDiscoveryScore, buildProductFinderSelection } from '@/clients/keepaClient';
+import { isCategoryAllowed, resolveCategoryTargets, ALLOWED_V1_CATEGORIES, type AllowedCategory } from '@/utils/keepaCategories';
 import { asinNativeResolution } from '@/pipeline/asinResolution';
 import { resolveProfile, mergeKeepaOptions, KEEPA_PROFILES } from '@/config/keepaProfiles';
 import { classifyKeepaCandidate, KeepaFilterReason } from '@/agents/discovery/keepaFilters';
+import {
+  KEEPA_STRATEGY_NAMES,
+  KEEPA_AUTO_ORDER,
+  DEFAULT_KEEPA_STRATEGY,
+  isKeepaStrategyName,
+  parseStrategySelector,
+  parseStrategyPlan,
+  shouldRunNextStrategy,
+  buildStrategyQuerySpecs,
+  buildStrategyEfficiency,
+  recommendStrategyConfig,
+  estimateKeepaTokens,
+  exceedsTokenBudget,
+  tokenGuardDecision,
+  mergeAsinDiscoveries,
+  countDuplicateAsins,
+  type StrategyBuildContext,
+  type StrategyEfficiencyInput,
+} from '@/config/keepaStrategies';
+import { normalizeRepeatPolicy } from '@/agents/export/crossBatchFilter';
 import type { ProductCandidate } from '@/types/product';
+
+const STRAT_CTX: StrategyBuildContext = {
+  minRankImprovementPercent: 10,
+  minAmazonPriceCents: 1000,
+  maxAmazonPriceCents: 15000,
+  maxSalesRank: 150000,
+  minAvgRank30d: 0,
+  poolPerQuery: 50,
+};
+const STRAT_CAT: AllowedCategory = { name: 'Home & Kitchen', rootId: 1055398 };
 
 const DEFAULTS = { minRankImprovementPercent: 20, minAmazonPrice: 10, maxAmazonPrice: 150, maxAsins: 100 };
 const FILTER_OPTS = { minRankImprovementPercent: 10, minAmazonPrice: 10, maxAmazonPrice: 150 };
@@ -234,6 +264,280 @@ const CASES: Case[] = [
   {
     label: 'classify: undefined rank improvement is NOT rejected (cant judge)',
     run: () => classifyKeepaCandidate(norm({ amazonPrice: 25 }), FILTER_OPTS).accepted === true,
+  },
+  // --- multi-strategy: config parsing ---
+  {
+    label: 'parseStrategySelector: all => every strategy (6)',
+    run: () => parseStrategySelector('all').length === KEEPA_STRATEGY_NAMES.length && KEEPA_STRATEGY_NAMES.length === 6,
+  },
+  {
+    label: 'parseStrategySelector: csv subset, unknown names dropped',
+    run: () => {
+      const r = parseStrategySelector('rank_drops_30d,current_rank_only,bogus');
+      return r.length === 2 && r.includes('rank_drops_30d') && r.includes('current_rank_only');
+    },
+  },
+  {
+    label: 'parseStrategySelector: blank/undefined/unknown-only => all',
+    run: () =>
+      parseStrategySelector(undefined).length === 6 &&
+      parseStrategySelector('').length === 6 &&
+      parseStrategySelector('nope').length === 6,
+  },
+  {
+    label: 'isKeepaStrategyName validates known/unknown',
+    run: () => isKeepaStrategyName('price_band_movers') && !isKeepaStrategyName('nope'),
+  },
+  {
+    label: 'strategy=all expands to multiple distinct strategies, each with queries',
+    run: () => {
+      const all = parseStrategySelector('all');
+      const seen = new Set<string>();
+      for (const s of all) for (const spec of buildStrategyQuerySpecs(s, STRAT_CAT, STRAT_CTX)) seen.add(spec.strategy);
+      return all.length === 6 && seen.size === 6;
+    },
+  },
+  // --- multi-strategy: query spec shapes ---
+  {
+    label: 'specs: rank_drops_30d requires 30d drop; current_rank_only does not',
+    run: () => {
+      const a = buildStrategyQuerySpecs('rank_drops_30d', STRAT_CAT, STRAT_CTX);
+      const b = buildStrategyQuerySpecs('current_rank_only', STRAT_CAT, STRAT_CTX);
+      return a.length === 1 && a[0].salesRankDrops30Min === 1 && b.length === 1 && b[0].salesRankDrops30Min === undefined;
+    },
+  },
+  {
+    label: 'specs: price_band_movers emits multiple band queries within the profile range',
+    run: () => {
+      const specs = buildStrategyQuerySpecs('price_band_movers', STRAT_CAT, STRAT_CTX);
+      return specs.length >= 2 && specs.every((s) => (s.minAmazonPriceCents ?? 0) >= 1000 && (s.maxAmazonPriceCents ?? 1e9) <= 15000);
+    },
+  },
+  {
+    label: 'specs: review_quality_movers sets rating + review thresholds',
+    run: () => {
+      const s = buildStrategyQuerySpecs('review_quality_movers', STRAT_CAT, STRAT_CTX)[0];
+      return (s.minRatingX10 ?? 0) > 0 && (s.minReviewCount ?? 0) > 0;
+    },
+  },
+  {
+    label: 'buildProductFinderSelection maps to real Keepa Product Finder fields (no fabrication)',
+    run: () => {
+      const sel = buildProductFinderSelection(buildStrategyQuerySpecs('rank_drops_30d', STRAT_CAT, STRAT_CTX)[0]);
+      return (
+        sel.current_SALES_gte === 1 &&
+        sel.salesRankDrops30_gte === 1 &&
+        sel.current_SALES_lte === 150000 &&
+        sel.current_AMAZON_gte === 1000 &&
+        sel.current_AMAZON_lte === 15000
+      );
+    },
+  },
+  // --- multi-strategy: ASIN dedupe + provenance ---
+  {
+    label: 'mergeAsinDiscoveries dedupes ASINs across strategies, preserving provenance',
+    run: () => {
+      const metas = mergeAsinDiscoveries([
+        { asin: 'A', strategy: 'rank_drops_30d' },
+        { asin: 'A', strategy: 'current_rank_only' },
+        { asin: 'B', strategy: 'rank_drops_30d' },
+        { asin: 'A', strategy: 'rank_drops_30d' }, // repeat within same strategy
+      ]);
+      const a = metas.find((m) => m.asin === 'A')!;
+      return (
+        metas.length === 2 &&
+        a.primaryStrategy === 'rank_drops_30d' &&
+        a.strategyCount === 2 &&
+        a.strategiesFound.length === 2 &&
+        countDuplicateAsins(metas) === 1
+      );
+    },
+  },
+  // --- multi-strategy: strategy-level reason counts ---
+  {
+    label: 'strategy-level reason counts tally rejections per primary strategy',
+    run: () => {
+      const perStrategy: Record<string, Record<string, number>> = {};
+      const tally = (strategy: string, reason: string) => {
+        perStrategy[strategy] = perStrategy[strategy] ?? {};
+        perStrategy[strategy][reason] = (perStrategy[strategy][reason] ?? 0) + 1;
+      };
+      const rows = [
+        { strategy: 'current_rank_only', n: norm({ amazonPrice: 4, rankImprovement30d: 30 }) }, // too low
+        { strategy: 'current_rank_only', n: norm({ amazonPrice: 999, rankImprovement30d: 30 }) }, // too high
+        { strategy: 'rank_drops_30d', n: norm({ amazonPrice: 25, rankImprovement30d: 30 }) }, // accepted
+      ];
+      for (const r of rows) {
+        const d = classifyKeepaCandidate(r.n, FILTER_OPTS);
+        if (!d.accepted) tally(r.strategy, d.reason!);
+      }
+      return (
+        perStrategy['current_rank_only']?.[KeepaFilterReason.KEEPA_PRICE_TOO_LOW] === 1 &&
+        perStrategy['current_rank_only']?.[KeepaFilterReason.KEEPA_PRICE_TOO_HIGH] === 1 &&
+        perStrategy['rank_drops_30d'] === undefined
+      );
+    },
+  },
+  // --- multi-strategy: token guard ---
+  {
+    label: 'estimateKeepaTokens grows with more strategies',
+    run: () => {
+      const one = estimateKeepaTokens({ strategies: ['rank_drops_30d'], categoryCount: 6, maxAsins: 10 });
+      const all = estimateKeepaTokens({ strategies: [...KEEPA_STRATEGY_NAMES], categoryCount: 6, maxAsins: 10 });
+      return all > one;
+    },
+  },
+  {
+    label: 'token guard blocks over-budget run',
+    run: () => {
+      const est = estimateKeepaTokens({ strategies: [...KEEPA_STRATEGY_NAMES], categoryCount: 6, maxAsins: 200 });
+      return exceedsTokenBudget(est, 1) === true && tokenGuardDecision(est, 1, false) === 'block';
+    },
+  },
+  {
+    label: '--force overrides token guard',
+    run: () => {
+      const est = estimateKeepaTokens({ strategies: [...KEEPA_STRATEGY_NAMES], categoryCount: 6, maxAsins: 200 });
+      return tokenGuardDecision(est, 1, true) === 'proceed';
+    },
+  },
+  {
+    label: 'token guard disabled when max=0 (no guard)',
+    run: () => exceedsTokenBudget(99999, 0) === false && tokenGuardDecision(99999, 0, false) === 'proceed',
+  },
+  // --- cross-batch filtering unchanged, independent of within-run dedupe ---
+  {
+    label: 'cross-batch repeat policies unchanged; separate from within-run strategy dedupe',
+    run: () => {
+      const policiesOk =
+        normalizeRepeatPolicy('never_repeat') === 'never_repeat' &&
+        normalizeRepeatPolicy('exclude_recent') === 'exclude_recent' &&
+        normalizeRepeatPolicy('allow_repeats') === 'allow_repeats';
+      // within-run dedupe collapses same-ASIN sightings; cross-batch is a later, separate filter.
+      const metas = mergeAsinDiscoveries([
+        { asin: 'A', strategy: 'rank_drops_30d' },
+        { asin: 'A', strategy: 'rank_drops_30d' },
+      ]);
+      return policiesOk && metas.length === 1;
+    },
+  },
+  // --- no fake data on failure ---
+  {
+    label: 'no fake Keepa data: an errored/empty query contributes zero candidates',
+    run: () => {
+      // A /query that errors returns no ASINs -> no discoveries -> merge fabricates nothing.
+      const metas = mergeAsinDiscoveries([]);
+      return metas.length === 0 && countDuplicateAsins(metas) === 0;
+    },
+  },
+  // --- strategy plan / modes (default, all, auto) ---
+  {
+    label: 'parseStrategyPlan: default => rank_drops_30d (fixed, efficient default)',
+    run: () => {
+      const p = parseStrategyPlan(undefined);
+      return p.mode === 'fixed' && p.strategies.length === 1 && p.strategies[0] === DEFAULT_KEEPA_STRATEGY && p.label === 'rank_drops_30d';
+    },
+  },
+  {
+    label: 'parseStrategyPlan: all => mode all, every strategy (calibration)',
+    run: () => {
+      const p = parseStrategyPlan('all');
+      return p.mode === 'all' && p.strategies.length === 6;
+    },
+  },
+  {
+    label: 'parseStrategyPlan: auto => mode auto, starts with rank_drops_30d',
+    run: () => {
+      const p = parseStrategyPlan('auto');
+      return p.mode === 'auto' && p.strategies[0] === 'rank_drops_30d' && p.strategies.length === KEEPA_AUTO_ORDER.length;
+    },
+  },
+  {
+    label: 'parseStrategyPlan: explicit list => fixed ordered',
+    run: () => {
+      const p = parseStrategyPlan('current_rank_only,rank_drops_30d');
+      return p.mode === 'fixed' && p.strategies.length === 2 && p.strategies[0] === 'current_rank_only';
+    },
+  },
+  // --- short-circuit / auto decisions ---
+  {
+    label: 'auto runs only rank_drops_30d when enough candidates found (short-circuit)',
+    run: () => shouldRunNextStrategy('auto', 10, 10) === false && shouldRunNextStrategy('auto', 11, 10) === false,
+  },
+  {
+    label: 'auto runs fallback strategies when candidate count is low',
+    run: () => shouldRunNextStrategy('auto', 3, 10) === true,
+  },
+  {
+    label: 'all mode never short-circuits (runs every strategy)',
+    run: () => shouldRunNextStrategy('all', 10, 10) === true && shouldRunNextStrategy('all', 999, 10) === true,
+  },
+  {
+    label: 'fixed mode short-circuits once the limit is met',
+    run: () => shouldRunNextStrategy('fixed', 10, 10) === false && shouldRunNextStrategy('fixed', 2, 10) === true,
+  },
+  // --- efficiency report ---
+  {
+    label: 'efficiency report handles zero-export strategies safely (no NaN/Infinity)',
+    run: () => {
+      const rows: StrategyEfficiencyInput[] = [
+        { strategy: 'rank_drops_30d', tokensConsumed: 80, rawReturned: 120, uniqueAsins: 120, accepted: 8, sourceValid: 7, demandPassed: 6, finalValidated: 5, exportedAfterFilters: 4 },
+        { strategy: 'price_band_movers', tokensConsumed: 264, rawReturned: 480, uniqueAsins: 359, accepted: 0, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+      ];
+      const eff = buildStrategyEfficiency(rows);
+      const a = eff.find((e) => e.strategy === 'rank_drops_30d')!;
+      const b = eff.find((e) => e.strategy === 'price_band_movers')!;
+      return (
+        a.tokensPerAccepted === 10 &&
+        a.tokensPerExported === 20 &&
+        a.contributionPercent === 100 &&
+        b.tokensPerAccepted === null &&
+        b.tokensPerExported === null &&
+        b.contributionPercent === 0 &&
+        Number.isFinite(a.contributionPercent) &&
+        Number.isFinite(b.contributionPercent)
+      );
+    },
+  },
+  {
+    label: 'efficiency report: no exports anywhere falls back to accepted-share contribution',
+    run: () => {
+      const eff = buildStrategyEfficiency([
+        { strategy: 'a', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 3, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+        { strategy: 'b', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 1, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+      ]);
+      const a = eff.find((e) => e.strategy === 'a')!;
+      return a.contributionPercent === 75 && Number.isFinite(a.contributionPercent);
+    },
+  },
+  // --- recommendation engine ---
+  {
+    label: 'recommendation: best single strategy + disable zero-contributors + all not worthwhile',
+    run: () => {
+      const eff = buildStrategyEfficiency([
+        { strategy: 'rank_drops_30d', tokensConsumed: 80, rawReturned: 120, uniqueAsins: 120, accepted: 8, sourceValid: 7, demandPassed: 6, finalValidated: 5, exportedAfterFilters: 4 },
+        { strategy: 'price_band_movers', tokensConsumed: 264, rawReturned: 480, uniqueAsins: 359, accepted: 0, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+        { strategy: 'review_quality_movers', tokensConsumed: 90, rawReturned: 120, uniqueAsins: 95, accepted: 0, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+      ]);
+      const rec = recommendStrategyConfig(eff, 'exploratory');
+      return (
+        rec.bestStrategy === 'rank_drops_30d' &&
+        rec.disableByDefault.includes('price_band_movers') &&
+        rec.disableByDefault.includes('review_quality_movers') &&
+        rec.strategyAllWorthwhile === false &&
+        rec.recommendedProfile === 'exploratory'
+      );
+    },
+  },
+  {
+    label: 'recommendation: multiple contributors => strategy=all worthwhile',
+    run: () => {
+      const eff = buildStrategyEfficiency([
+        { strategy: 'a', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 3, sourceValid: 3, demandPassed: 2, finalValidated: 2, exportedAfterFilters: 2 },
+        { strategy: 'b', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 1, sourceValid: 1, demandPassed: 1, finalValidated: 1, exportedAfterFilters: 1 },
+      ]);
+      return recommendStrategyConfig(eff, 'broad').strategyAllWorthwhile === true;
+    },
   },
 ];
 

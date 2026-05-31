@@ -194,14 +194,16 @@ export async function probeAmazonEnvironment(options: ProbeOptions = {}): Promis
 /**
  * Persist an environment check to amazon_environment_checks (best-effort).
  * No secrets: proxy host is masked, password never stored.
+ * Returns true if the row was persisted, false otherwise (insert error or
+ * Supabase not reachable). Never throws — persistence is non-fatal.
  */
-export async function persistAmazonEnvCheck(report: AmazonEnvReport, notes?: string): Promise<void> {
+export async function persistAmazonEnvCheck(report: AmazonEnvReport, notes?: string): Promise<boolean> {
   const timeoutCount = report.probes.filter((p) => p.validationErrorCode === 'TIMEOUT').length;
   const navigationFailedCount = report.probes.filter((p) => p.validationErrorCode === 'NAVIGATION_FAILED').length;
   try {
     // Lazy import so the readiness check still works without Supabase wired.
     const { getSupabase } = await import('@/clients/supabaseClient');
-    await getSupabase().from('amazon_environment_checks').insert({
+    const { error } = await getSupabase().from('amazon_environment_checks').insert({
       status: report.status,
       tested_asins: report.probes.map((p) => p.asin),
       loaded_count: report.loaded,
@@ -212,8 +214,14 @@ export async function persistAmazonEnvCheck(report: AmazonEnvReport, notes?: str
       proxy_host_masked: report.proxy.serverMasked,
       notes: notes ?? null,
     });
+    if (error) {
+      log.warn('persistAmazonEnvCheck insert failed (non-fatal)', { err: error.message });
+      return false;
+    }
+    return true;
   } catch (err) {
     log.warn('persistAmazonEnvCheck failed (non-fatal)', { err: (err as Error).message });
+    return false;
   }
 }
 
