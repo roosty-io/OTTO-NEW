@@ -31,10 +31,11 @@ import { executeKeepaDiscovery, type KeepaRunResult } from '@/pipeline/keepaDisc
 import { preflightAmazon, proxyDiagnostics, type AmazonEnvReport } from '@/pipeline/amazonEnvironment';
 import { resolveCategoryTargets } from '@/utils/keepaCategories';
 import {
-  parseStrategySelector,
+  parseStrategyPlan,
   estimateKeepaTokens,
   tokenGuardDecision,
   type KeepaStrategyName,
+  type StrategyMode,
 } from '@/config/keepaStrategies';
 
 const DEFAULT_LIMIT = 25;
@@ -49,7 +50,8 @@ interface KeepaArgs {
   maxPrice?: number;
   minRankImprovement?: number;
   strategies: KeepaStrategyName[];
-  strategySelector: string;
+  strategyMode: StrategyMode;
+  strategyLabel: string;
   maxKeepaTokens: number;
   repeatPolicy: RepeatPolicy;
   repeatLookbackDays: number;
@@ -61,7 +63,7 @@ async function main(): Promise<void> {
   const args = parseArgs();
   const reportTimestamp = new Date().toISOString().replace(/[:.]/g, '-');
   const profileLabel = args.profile ? args.profile.name : 'custom/env';
-  const strategyLabel = args.strategies.length === 6 ? 'all' : args.strategies.join(',');
+  const strategyLabel = args.strategyLabel;
   const commandRun = `npm run run:keepa-discovery -- --profile=${profileLabel} --strategy=${strategyLabel} --limit=${args.limit}`;
 
   const envProblems = validateEnv();
@@ -99,7 +101,8 @@ async function main(): Promise<void> {
   });
   console.log('\nKeepa token guard');
   console.log('-----------------');
-  console.log(`  strategies            : ${strategyLabel} (${args.strategies.length})`);
+  console.log(`  strategy mode         : ${args.strategyMode} (${strategyLabel})`);
+  console.log(`  strategies considered : ${args.strategies.join(', ')}`);
   console.log(`  categories targeted   : ${categoryCount}`);
   console.log(`  estimated Keepa tokens: ~${estimatedTokens} (rough; enforced against actual usage)`);
   console.log(`  max Keepa tokens/run  : ${args.maxKeepaTokens > 0 ? args.maxKeepaTokens : 'no guard'}`);
@@ -152,6 +155,8 @@ async function main(): Promise<void> {
     maxAmazonPrice: resolved.maxAmazonPrice,
     minRankImprovementPercent: resolved.minRankImprovementPercent,
     strategies: args.strategies,
+    strategyMode: args.strategyMode,
+    profileName: profileLabel,
     maxKeepaTokens: args.maxKeepaTokens,
     force: args.force,
     repeatPolicy: args.repeatPolicy,
@@ -180,7 +185,7 @@ function parseArgs(): KeepaArgs {
   let minPrice: number | undefined;
   let maxPrice: number | undefined;
   let minRankImprovement: number | undefined;
-  let strategySelector = 'all';
+  let strategySelector = ''; // blank => efficient default (rank_drops_30d)
   let maxKeepaTokens = env.keepa.discoveryMaxTokensPerRun;
   let repeatPolicy = normalizeRepeatPolicy(env.export.repeatPolicy);
   let repeatLookbackDays = env.export.repeatLookbackDays;
@@ -225,8 +230,8 @@ function parseArgs(): KeepaArgs {
       force = true;
     }
   }
-  const strategies = parseStrategySelector(strategySelector);
-  return { limit, profile, category, minPrice, maxPrice, minRankImprovement, strategies, strategySelector, maxKeepaTokens, repeatPolicy, repeatLookbackDays, preflightAmazon: preflightAmazonFlag, force };
+  const plan = parseStrategyPlan(strategySelector);
+  return { limit, profile, category, minPrice, maxPrice, minRankImprovement, strategies: plan.strategies, strategyMode: plan.mode, strategyLabel: plan.label, maxKeepaTokens, repeatPolicy, repeatLookbackDays, preflightAmazon: preflightAmazonFlag, force };
 }
 
 function validateEnv(): string[] {
@@ -272,16 +277,29 @@ function printSummary(
   console.log(`  discovery_run_id      : ${runId}`);
   console.log(`  export_batch_id       : ${r.exportBatchId || '(none)'}`);
   console.log('  ----- discovery -----');
-  console.log(`  strategies run        : ${r.strategiesRun.join(', ')}`);
+  console.log(`  strategy mode         : ${r.strategyMode}`);
+  console.log(`  strategies run        : ${r.strategiesRun.join(', ') || '(none)'}`);
+  if (r.strategiesSkipped.length > 0) {
+    console.log(`  strategies skipped    : ${r.strategiesSkipped.map((sk) => `${sk.strategy} (${sk.reason})`).join(', ')}`);
+  }
   console.log(`  raw Keepa products    : ${s.rawKeepaCandidates}`);
   console.log(`  unique ASIN candidates: ${r.uniqueAsinCandidates}`);
   console.log(`  ASIN-native candidates: ${s.asinNativeCandidates}`);
   console.log(`  duplicate ASINs across strategies: ${r.duplicateAsinsAcrossStrategies}`);
   if (r.tokenBudgetStopped) console.log('  NOTE: token budget reached; discovery stopped early (partial run).');
-  console.log('  ----- per strategy (returned / unique / accepted / rejected) -----');
-  for (const st of r.perStrategy) {
-    console.log(`    ${st.strategy.padEnd(22)} returned=${st.rawProductsReturned} unique=${st.uniqueAsinsContributed} accepted=${st.accepted} rejected=${st.rejected}`);
+  console.log('  ----- strategy efficiency (tokens / accepted / exported / tokens-per-accepted / contribution) -----');
+  for (const e of r.strategyEfficiency) {
+    console.log(
+      `    ${e.strategy.padEnd(22)} tokens=${e.tokensConsumed ?? 'n/a'} returned=${e.rawReturned} unique=${e.uniqueAsins} ` +
+        `accepted=${e.accepted} srcValid=${e.sourceValid} demand=${e.demandPassed} final=${e.finalValidated} exported=${e.exportedAfterFilters} ` +
+        `tok/acc=${e.tokensPerAccepted ?? 'n/a'} tok/exp=${e.tokensPerExported ?? 'n/a'} contrib=${e.contributionPercent}%`,
+    );
   }
+  console.log('  ----- recommendation -----');
+  console.log(`    best single strategy : ${r.strategyRecommendation.bestStrategy ?? '(none)'}`);
+  console.log(`    disable by default   : ${r.strategyRecommendation.disableByDefault.join(', ') || '(none)'}`);
+  console.log(`    strategy=all worthwhile: ${r.strategyRecommendation.strategyAllWorthwhile}`);
+  for (const line of r.strategyRecommendation.rationale) console.log(`    - ${line}`);
   console.log('  ----- keepa filter losses -----');
   for (const [code, n] of Object.entries(r.filterReasons).sort((a, b) => b[1] - a[1])) {
     console.log(`    ${code.padEnd(34)} ${n}`);
@@ -375,16 +393,33 @@ function writeReport(
   lines.push(`| cross-batch repeats removed | ${s.crossBatchRepeatsRemoved} |`);
   lines.push(`| exported after all filters | ${s.exportedAfterAllFilters} |`);
   lines.push('');
-  lines.push('## Strategy diagnostics');
+  lines.push('## Strategy efficiency');
   lines.push('');
-  lines.push('| Strategy | products returned | unique ASINs | accepted | rejected |');
-  lines.push('| --- | --- | --- | --- | --- |');
-  for (const st of r.perStrategy) {
-    lines.push(`| \`${st.strategy}\` | ${st.rawProductsReturned} | ${st.uniqueAsinsContributed} | ${st.accepted} | ${st.rejected} |`);
+  lines.push(`- strategy mode: \`${r.strategyMode}\``);
+  lines.push(`- strategies run: ${r.strategiesRun.join(', ') || '(none)'}`);
+  if (r.strategiesSkipped.length > 0) {
+    lines.push('- strategies skipped (auto/short-circuit decisions):');
+    for (const sk of r.strategiesSkipped) lines.push(`  - \`${sk.strategy}\` — ${sk.reason}`);
+  }
+  lines.push('');
+  lines.push('| Strategy | tokens | returned | unique | accepted | src valid | demand | final | exported | tok/accepted | tok/exported | contribution |');
+  lines.push('| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |');
+  for (const e of r.strategyEfficiency) {
+    lines.push(
+      `| \`${e.strategy}\` | ${e.tokensConsumed ?? 'n/a'} | ${e.rawReturned} | ${e.uniqueAsins} | ${e.accepted} | ${e.sourceValid} | ${e.demandPassed} | ${e.finalValidated} | ${e.exportedAfterFilters} | ${e.tokensPerAccepted ?? 'n/a'} | ${e.tokensPerExported ?? 'n/a'} | ${e.contributionPercent}% |`,
+    );
   }
   lines.push('');
   lines.push(`- duplicate ASINs across strategies: ${r.duplicateAsinsAcrossStrategies}`);
   lines.push(`- final unique ASIN-native candidates: ${r.uniqueAsinCandidates}`);
+  lines.push('');
+  lines.push('## Recommendation');
+  lines.push('');
+  lines.push(`- **best single strategy**: \`${r.strategyRecommendation.bestStrategy ?? '(none)'}\``);
+  lines.push(`- **profile compared**: \`${r.strategyRecommendation.recommendedProfile}\``);
+  lines.push(`- **disable by default**: ${r.strategyRecommendation.disableByDefault.map((d) => `\`${d}\``).join(', ') || '(none)'}`);
+  lines.push(`- **--strategy=all worthwhile**: ${r.strategyRecommendation.strategyAllWorthwhile}`);
+  for (const line of r.strategyRecommendation.rationale) lines.push(`- ${line}`);
   lines.push('');
   lines.push('### Filter reasons by strategy');
   lines.push('');

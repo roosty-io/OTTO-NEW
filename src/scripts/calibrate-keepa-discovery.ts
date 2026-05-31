@@ -39,6 +39,7 @@ import {
   estimateKeepaTokens,
   tokenGuardDecision,
   type KeepaStrategyName,
+  type StrategyMode,
 } from '@/config/keepaStrategies';
 
 const DEFAULT_LIMIT = 25;
@@ -48,10 +49,11 @@ const DEFAULT_PROFILES: KeepaProfileName[] = ['balanced', 'broad'];
 const DEFAULT_STRATEGY_CELLS = ['rank_drops_30d', 'current_rank_only', 'all'];
 const log = logger.child('calibrate-keepa-discovery');
 
-/** A calibration cell's strategy axis: a single strategy, or 'all'. */
+/** A calibration cell's strategy axis: a single strategy, 'all', or 'auto'. */
 interface StrategyCell {
   label: string;
   strategies: KeepaStrategyName[];
+  mode: StrategyMode;
 }
 
 interface CalArgs {
@@ -154,6 +156,8 @@ async function main(): Promise<void> {
       maxAmazonPrice: profile.maxAmazonPrice,
       minRankImprovementPercent: profile.minRankImprovementPercent,
       strategies: cell.strategies,
+      strategyMode: cell.mode,
+      profileName: profile.name,
       maxKeepaTokens: args.maxKeepaTokens,
       force: args.force,
       repeatPolicy: args.repeatPolicy,
@@ -238,11 +242,12 @@ function parseArgs(): CalArgs {
   return { limit, profiles, strategyCells, maxKeepaTokens, repeatPolicy, repeatLookbackDays, preflightAmazon: preflightAmazonFlag, force };
 }
 
-/** Resolve a strategy-cell token: 'all' => every strategy; a known name => single. */
+/** Resolve a strategy-cell token: 'all'/'auto' => every strategy; name => single. */
 function toStrategyCell(token: string): StrategyCell | null {
   const t = token.trim().toLowerCase();
-  if (t === 'all') return { label: 'all', strategies: [...KEEPA_STRATEGY_NAMES] };
-  if (isKeepaStrategyName(t)) return { label: t, strategies: [t] };
+  if (t === 'all') return { label: 'all', strategies: [...KEEPA_STRATEGY_NAMES], mode: 'all' };
+  if (t === 'auto') return { label: 'auto', strategies: [...KEEPA_STRATEGY_NAMES], mode: 'auto' };
+  if (isKeepaStrategyName(t)) return { label: t, strategies: [t], mode: 'fixed' };
   return null;
 }
 

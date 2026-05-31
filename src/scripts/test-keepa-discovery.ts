@@ -17,15 +17,22 @@ import { resolveProfile, mergeKeepaOptions, KEEPA_PROFILES } from '@/config/keep
 import { classifyKeepaCandidate, KeepaFilterReason } from '@/agents/discovery/keepaFilters';
 import {
   KEEPA_STRATEGY_NAMES,
+  KEEPA_AUTO_ORDER,
+  DEFAULT_KEEPA_STRATEGY,
   isKeepaStrategyName,
   parseStrategySelector,
+  parseStrategyPlan,
+  shouldRunNextStrategy,
   buildStrategyQuerySpecs,
+  buildStrategyEfficiency,
+  recommendStrategyConfig,
   estimateKeepaTokens,
   exceedsTokenBudget,
   tokenGuardDecision,
   mergeAsinDiscoveries,
   countDuplicateAsins,
   type StrategyBuildContext,
+  type StrategyEfficiencyInput,
 } from '@/config/keepaStrategies';
 import { normalizeRepeatPolicy } from '@/agents/export/crossBatchFilter';
 import type { ProductCandidate } from '@/types/product';
@@ -421,6 +428,115 @@ const CASES: Case[] = [
       // A /query that errors returns no ASINs -> no discoveries -> merge fabricates nothing.
       const metas = mergeAsinDiscoveries([]);
       return metas.length === 0 && countDuplicateAsins(metas) === 0;
+    },
+  },
+  // --- strategy plan / modes (default, all, auto) ---
+  {
+    label: 'parseStrategyPlan: default => rank_drops_30d (fixed, efficient default)',
+    run: () => {
+      const p = parseStrategyPlan(undefined);
+      return p.mode === 'fixed' && p.strategies.length === 1 && p.strategies[0] === DEFAULT_KEEPA_STRATEGY && p.label === 'rank_drops_30d';
+    },
+  },
+  {
+    label: 'parseStrategyPlan: all => mode all, every strategy (calibration)',
+    run: () => {
+      const p = parseStrategyPlan('all');
+      return p.mode === 'all' && p.strategies.length === 6;
+    },
+  },
+  {
+    label: 'parseStrategyPlan: auto => mode auto, starts with rank_drops_30d',
+    run: () => {
+      const p = parseStrategyPlan('auto');
+      return p.mode === 'auto' && p.strategies[0] === 'rank_drops_30d' && p.strategies.length === KEEPA_AUTO_ORDER.length;
+    },
+  },
+  {
+    label: 'parseStrategyPlan: explicit list => fixed ordered',
+    run: () => {
+      const p = parseStrategyPlan('current_rank_only,rank_drops_30d');
+      return p.mode === 'fixed' && p.strategies.length === 2 && p.strategies[0] === 'current_rank_only';
+    },
+  },
+  // --- short-circuit / auto decisions ---
+  {
+    label: 'auto runs only rank_drops_30d when enough candidates found (short-circuit)',
+    run: () => shouldRunNextStrategy('auto', 10, 10) === false && shouldRunNextStrategy('auto', 11, 10) === false,
+  },
+  {
+    label: 'auto runs fallback strategies when candidate count is low',
+    run: () => shouldRunNextStrategy('auto', 3, 10) === true,
+  },
+  {
+    label: 'all mode never short-circuits (runs every strategy)',
+    run: () => shouldRunNextStrategy('all', 10, 10) === true && shouldRunNextStrategy('all', 999, 10) === true,
+  },
+  {
+    label: 'fixed mode short-circuits once the limit is met',
+    run: () => shouldRunNextStrategy('fixed', 10, 10) === false && shouldRunNextStrategy('fixed', 2, 10) === true,
+  },
+  // --- efficiency report ---
+  {
+    label: 'efficiency report handles zero-export strategies safely (no NaN/Infinity)',
+    run: () => {
+      const rows: StrategyEfficiencyInput[] = [
+        { strategy: 'rank_drops_30d', tokensConsumed: 80, rawReturned: 120, uniqueAsins: 120, accepted: 8, sourceValid: 7, demandPassed: 6, finalValidated: 5, exportedAfterFilters: 4 },
+        { strategy: 'price_band_movers', tokensConsumed: 264, rawReturned: 480, uniqueAsins: 359, accepted: 0, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+      ];
+      const eff = buildStrategyEfficiency(rows);
+      const a = eff.find((e) => e.strategy === 'rank_drops_30d')!;
+      const b = eff.find((e) => e.strategy === 'price_band_movers')!;
+      return (
+        a.tokensPerAccepted === 10 &&
+        a.tokensPerExported === 20 &&
+        a.contributionPercent === 100 &&
+        b.tokensPerAccepted === null &&
+        b.tokensPerExported === null &&
+        b.contributionPercent === 0 &&
+        Number.isFinite(a.contributionPercent) &&
+        Number.isFinite(b.contributionPercent)
+      );
+    },
+  },
+  {
+    label: 'efficiency report: no exports anywhere falls back to accepted-share contribution',
+    run: () => {
+      const eff = buildStrategyEfficiency([
+        { strategy: 'a', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 3, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+        { strategy: 'b', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 1, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+      ]);
+      const a = eff.find((e) => e.strategy === 'a')!;
+      return a.contributionPercent === 75 && Number.isFinite(a.contributionPercent);
+    },
+  },
+  // --- recommendation engine ---
+  {
+    label: 'recommendation: best single strategy + disable zero-contributors + all not worthwhile',
+    run: () => {
+      const eff = buildStrategyEfficiency([
+        { strategy: 'rank_drops_30d', tokensConsumed: 80, rawReturned: 120, uniqueAsins: 120, accepted: 8, sourceValid: 7, demandPassed: 6, finalValidated: 5, exportedAfterFilters: 4 },
+        { strategy: 'price_band_movers', tokensConsumed: 264, rawReturned: 480, uniqueAsins: 359, accepted: 0, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+        { strategy: 'review_quality_movers', tokensConsumed: 90, rawReturned: 120, uniqueAsins: 95, accepted: 0, sourceValid: 0, demandPassed: 0, finalValidated: 0, exportedAfterFilters: 0 },
+      ]);
+      const rec = recommendStrategyConfig(eff, 'exploratory');
+      return (
+        rec.bestStrategy === 'rank_drops_30d' &&
+        rec.disableByDefault.includes('price_band_movers') &&
+        rec.disableByDefault.includes('review_quality_movers') &&
+        rec.strategyAllWorthwhile === false &&
+        rec.recommendedProfile === 'exploratory'
+      );
+    },
+  },
+  {
+    label: 'recommendation: multiple contributors => strategy=all worthwhile',
+    run: () => {
+      const eff = buildStrategyEfficiency([
+        { strategy: 'a', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 3, sourceValid: 3, demandPassed: 2, finalValidated: 2, exportedAfterFilters: 2 },
+        { strategy: 'b', tokensConsumed: 10, rawReturned: 5, uniqueAsins: 5, accepted: 1, sourceValid: 1, demandPassed: 1, finalValidated: 1, exportedAfterFilters: 1 },
+      ]);
+      return recommendStrategyConfig(eff, 'broad').strategyAllWorthwhile === true;
     },
   },
 ];

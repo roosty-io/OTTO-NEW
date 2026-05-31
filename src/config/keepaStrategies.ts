@@ -239,3 +239,159 @@ export function mergeAsinDiscoveries(discoveries: AsinDiscovery[]): AsinStrategy
 export function countDuplicateAsins(metas: AsinStrategyMeta[]): number {
   return metas.filter((m) => m.strategyCount > 1).length;
 }
+
+// ---------------------------------------------------------------------------
+// Strategy plan / modes (default, all, auto) + short-circuit decision
+// ---------------------------------------------------------------------------
+
+export type StrategyMode = 'all' | 'auto' | 'fixed';
+
+/**
+ * The single most token-efficient default. Calibration on GCE showed
+ * rank_drops_30d produced all accepted candidates while the other strategies
+ * spent tokens for zero accepted output, so it is the default for a normal run.
+ */
+export const DEFAULT_KEEPA_STRATEGY: KeepaStrategyName = 'rank_drops_30d';
+
+/**
+ * Fallback order for --strategy=auto: start with the proven producer, then add
+ * breadth only if the candidate limit hasn't been met.
+ */
+export const KEEPA_AUTO_ORDER: KeepaStrategyName[] = [
+  'rank_drops_30d',
+  'rank_drops_90d',
+  'current_rank_only',
+  'category_movers',
+  'price_band_movers',
+  'review_quality_movers',
+];
+
+export interface StrategyPlan {
+  mode: StrategyMode;
+  /** Ordered strategies to consider (auto/fixed may stop early; all never does). */
+  strategies: KeepaStrategyName[];
+  label: string;
+}
+
+/**
+ * Parse --strategy=... into a plan.
+ *   (blank)  => fixed [rank_drops_30d]   (efficient default)
+ *   all      => all strategies, never short-circuited (calibration)
+ *   auto     => fallback order, short-circuits once the limit is met
+ *   a,b,c    => fixed ordered list (short-circuits once the limit is met)
+ * 'all'/'auto' anywhere in a list win. Unknown names are dropped; an empty
+ * result falls back to the default strategy.
+ */
+export function parseStrategyPlan(raw?: string): StrategyPlan {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (v === '') return { mode: 'fixed', strategies: [DEFAULT_KEEPA_STRATEGY], label: DEFAULT_KEEPA_STRATEGY };
+  if (v === 'all') return { mode: 'all', strategies: [...KEEPA_STRATEGY_NAMES], label: 'all' };
+  if (v === 'auto') return { mode: 'auto', strategies: [...KEEPA_AUTO_ORDER], label: 'auto' };
+  const parts = v.split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.includes('all')) return { mode: 'all', strategies: [...KEEPA_STRATEGY_NAMES], label: 'all' };
+  if (parts.includes('auto')) return { mode: 'auto', strategies: [...KEEPA_AUTO_ORDER], label: 'auto' };
+  const out: KeepaStrategyName[] = [];
+  for (const p of parts) if (isKeepaStrategyName(p) && !out.includes(p)) out.push(p);
+  if (out.length === 0) return { mode: 'fixed', strategies: [DEFAULT_KEEPA_STRATEGY], label: DEFAULT_KEEPA_STRATEGY };
+  return { mode: 'fixed', strategies: out, label: out.join(',') };
+}
+
+/**
+ * Short-circuit decision: should the next strategy run? 'all' always runs every
+ * strategy (full diagnostics for calibration); 'auto'/'fixed' stop once enough
+ * accepted candidates have been gathered.
+ */
+export function shouldRunNextStrategy(mode: StrategyMode, acceptedSoFar: number, maxAsins: number): boolean {
+  if (mode === 'all') return true;
+  return acceptedSoFar < maxAsins;
+}
+
+// ---------------------------------------------------------------------------
+// Strategy efficiency report + recommendation (pure)
+// ---------------------------------------------------------------------------
+
+export interface StrategyEfficiencyInput {
+  strategy: string;
+  tokensConsumed?: number;
+  rawReturned: number;
+  uniqueAsins: number;
+  accepted: number;
+  sourceValid: number;
+  demandPassed: number;
+  finalValidated: number;
+  exportedAfterFilters: number;
+}
+
+export interface StrategyEfficiency extends StrategyEfficiencyInput {
+  /** null when there is nothing to divide by (avoids NaN/Infinity). */
+  tokensPerAccepted: number | null;
+  tokensPerExported: number | null;
+  /** % of total exported (falls back to % of total accepted when nothing exported). */
+  contributionPercent: number;
+}
+
+function round(n: number, dp: number): number {
+  const f = 10 ** dp;
+  return Math.round(n * f) / f;
+}
+
+/** Build the per-strategy efficiency table. Safe for zero-export strategies. */
+export function buildStrategyEfficiency(rows: StrategyEfficiencyInput[]): StrategyEfficiency[] {
+  const totalExported = rows.reduce((s, r) => s + r.exportedAfterFilters, 0);
+  const totalAccepted = rows.reduce((s, r) => s + r.accepted, 0);
+  const denom = totalExported > 0 ? totalExported : totalAccepted;
+  return rows.map((r) => {
+    const t = r.tokensConsumed;
+    const tokensPerAccepted = t !== undefined && r.accepted > 0 ? round(t / r.accepted, 2) : null;
+    const tokensPerExported = t !== undefined && r.exportedAfterFilters > 0 ? round(t / r.exportedAfterFilters, 2) : null;
+    const basis = totalExported > 0 ? r.exportedAfterFilters : r.accepted;
+    const contributionPercent = denom > 0 ? round((basis / denom) * 100, 1) : 0;
+    return { ...r, tokensPerAccepted, tokensPerExported, contributionPercent };
+  });
+}
+
+export interface StrategyRecommendation {
+  /** Highest-contributing strategy, or null when nothing produced output. */
+  bestStrategy: string | null;
+  recommendedProfile: string;
+  /** Strategies that consumed tokens but produced no accepted candidates. */
+  disableByDefault: string[];
+  /** True only when >1 strategy actually contributed output. */
+  strategyAllWorthwhile: boolean;
+  rationale: string[];
+}
+
+/**
+ * Recommend a default strategy/profile from one run's efficiency table. Best =
+ * most exported, then most accepted, then fewest tokens/accepted.
+ */
+export function recommendStrategyConfig(
+  efficiencies: StrategyEfficiency[],
+  profileName: string,
+): StrategyRecommendation {
+  const ranked = [...efficiencies].sort((a, b) => {
+    if (b.exportedAfterFilters !== a.exportedAfterFilters) return b.exportedAfterFilters - a.exportedAfterFilters;
+    if (b.accepted !== a.accepted) return b.accepted - a.accepted;
+    return (a.tokensPerAccepted ?? Infinity) - (b.tokensPerAccepted ?? Infinity);
+  });
+  const top = ranked[0];
+  const bestStrategy = top && (top.exportedAfterFilters > 0 || top.accepted > 0) ? top.strategy : null;
+  const contributors = efficiencies.filter((e) => e.exportedAfterFilters > 0 || e.accepted > 0);
+  const disableByDefault = efficiencies
+    .filter((e) => (e.tokensConsumed ?? 0) > 0 && e.accepted === 0 && e.exportedAfterFilters === 0)
+    .map((e) => e.strategy);
+  const strategyAllWorthwhile = contributors.length > 1;
+
+  const rationale: string[] = [];
+  if (bestStrategy) rationale.push(`Best single strategy: ${bestStrategy} (most exported/accepted this run).`);
+  else rationale.push('No strategy produced accepted candidates this run.');
+  if (disableByDefault.length > 0) rationale.push(`Disable by default (spent tokens, zero accepted): ${disableByDefault.join(', ')}.`);
+  rationale.push(
+    strategyAllWorthwhile
+      ? 'Multiple strategies contributed — --strategy=all or --strategy=auto adds real breadth.'
+      : 'Only one strategy contributed — prefer that single strategy or --strategy=auto over --strategy=all to save tokens.',
+  );
+  rationale.push(`Profile compared: ${profileName} (use calibrate:keepa-discovery to compare profiles head-to-head).`);
+
+  return { bestStrategy, recommendedProfile: profileName, disableByDefault, strategyAllWorthwhile, rationale };
+}

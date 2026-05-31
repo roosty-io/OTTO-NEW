@@ -17,8 +17,16 @@ import {
   type KeepaCategoryStat,
   type KeepaStrategyStat,
   type AsinStrategyProvenance,
+  type SkippedStrategy,
 } from '@/agents/discovery/KeepaRankMovementDiscoveryAgent';
-import type { KeepaStrategyName } from '@/config/keepaStrategies';
+import {
+  buildStrategyEfficiency,
+  recommendStrategyConfig,
+  type KeepaStrategyName,
+  type StrategyMode,
+  type StrategyEfficiency,
+  type StrategyRecommendation,
+} from '@/config/keepaStrategies';
 import { BasicAmazonAsinResolverAgent } from '@/agents/asin/BasicAmazonAsinResolverAgent';
 import { AmazonSourceValidationAgent } from '@/agents/amazon/AmazonSourceValidationAgent';
 import { EbayDemandScoringAgent } from '@/agents/ebay/EbayDemandScoringAgent';
@@ -44,8 +52,12 @@ export interface KeepaRunOptions {
   repeatPolicy: RepeatPolicy;
   repeatLookbackDays: number;
   isSynthetic: boolean;
-  /** Product Finder strategies to run; empty/undefined = all strategies. */
+  /** Ordered Product Finder strategies to consider; empty/undefined = default. */
   strategies?: KeepaStrategyName[];
+  /** all = run every strategy; auto/fixed = stop once enough candidates found. */
+  strategyMode?: StrategyMode;
+  /** Profile label, for the strategy recommendation. */
+  profileName?: string;
   /** Token budget for the run (0 = no guard). */
   maxKeepaTokens?: number;
   /** Bypass the token guard. */
@@ -96,6 +108,10 @@ export interface KeepaRunResult {
   perCategory: KeepaCategoryStat[];
   perStrategy: KeepaStrategyStat[];
   strategiesRun: string[];
+  strategiesSkipped: SkippedStrategy[];
+  strategyMode: StrategyMode;
+  strategyEfficiency: StrategyEfficiency[];
+  strategyRecommendation: StrategyRecommendation;
   duplicateAsinsAcrossStrategies: number;
   uniqueAsinCandidates: number;
   strategyByAsin: Record<string, AsinStrategyProvenance>;
@@ -136,6 +152,7 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
     maxAmazonPrice: opts.maxAmazonPrice,
     minRankImprovementPercent: opts.minRankImprovementPercent,
     strategies: opts.strategies,
+    strategyMode: opts.strategyMode,
     maxKeepaTokens: opts.maxKeepaTokens,
     force: opts.force,
   });
@@ -144,6 +161,15 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
 
   const sourceFailureSamples: SourceFailureSample[] = [];
   const validated: ValidatedProduct[] = [];
+
+  // Per-strategy validation tallies, keyed by the candidate's primary strategy.
+  const perStrategySourceValid: Record<string, number> = {};
+  const perStrategyDemand: Record<string, number> = {};
+  const perStrategyFinal: Record<string, number> = {};
+  const tallyStrat = (m: Record<string, number>, c: ProductCandidate) => {
+    const k = c.primaryKeepaStrategy ?? 'unknown';
+    m[k] = (m[k] ?? 0) + 1;
+  };
 
   if (discovery.candidates.length > 0) {
     const amazonClient = getAmazonBrowserClient();
@@ -185,6 +211,7 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
         continue;
       }
       stats.amazonSourceValid++;
+      tallyStrat(perStrategySourceValid, candidate);
       const amazonData = amazonResult.data;
       const amazonPrice = amazonData.price ?? resolved.price ?? candidate.priceHint ?? 0;
 
@@ -207,6 +234,7 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
         continue;
       }
       stats.demandPassed++;
+      tallyStrat(perStrategyDemand, candidate);
 
       const complianceResult = await complianceAgent.run({
         ctx: {
@@ -290,6 +318,7 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
         continue;
       }
       stats.finalValidated++;
+      tallyStrat(perStrategyFinal, candidate);
 
       validated.push({
         ottoProductId: candidate.ottoProductId,
@@ -386,11 +415,43 @@ export async function executeKeepaDiscovery(opts: KeepaRunOptions): Promise<Keep
   stats.repeatPolicy = exportResult.data.repeatPolicy;
   stats.repeatLookbackDays = exportResult.data.repeatLookbackDays;
 
+  // Exported ASINs = validated ASINs that survived the cross-batch filter
+  // (same-batch dedupe keeps one row per ASIN, so the ASIN still exports).
+  const excludedAsins = new Set(exportResult.data.crossBatchExclusions.map((e) => e.asin));
+  const perStrategyExported: Record<string, number> = {};
+  const seenExportAsin = new Set<string>();
+  for (const v of validated) {
+    if (excludedAsins.has(v.asin) || seenExportAsin.has(v.asin)) continue;
+    seenExportAsin.add(v.asin);
+    const strat = discovery.strategyByAsin[v.asin]?.primaryStrategy ?? 'unknown';
+    perStrategyExported[strat] = (perStrategyExported[strat] ?? 0) + 1;
+  }
+
+  // Per-strategy efficiency table + a recommendation from this run's data.
+  const strategyEfficiency = buildStrategyEfficiency(
+    discovery.perStrategy.map((st) => ({
+      strategy: st.strategy,
+      tokensConsumed: st.tokensConsumed,
+      rawReturned: st.rawProductsReturned,
+      uniqueAsins: st.uniqueAsinsContributed,
+      accepted: st.accepted,
+      sourceValid: perStrategySourceValid[st.strategy] ?? 0,
+      demandPassed: perStrategyDemand[st.strategy] ?? 0,
+      finalValidated: perStrategyFinal[st.strategy] ?? 0,
+      exportedAfterFilters: perStrategyExported[st.strategy] ?? 0,
+    })),
+  );
+  const strategyRecommendation = recommendStrategyConfig(strategyEfficiency, opts.profileName ?? 'custom');
+
   return {
     stats,
     perCategory: discovery.perCategory,
     perStrategy: discovery.perStrategy,
     strategiesRun: discovery.strategiesRun,
+    strategiesSkipped: discovery.strategiesSkipped,
+    strategyMode: discovery.strategyMode,
+    strategyEfficiency,
+    strategyRecommendation,
     duplicateAsinsAcrossStrategies: discovery.duplicateAsinsAcrossStrategies,
     uniqueAsinCandidates: discovery.asinNativeCount,
     strategyByAsin: discovery.strategyByAsin,

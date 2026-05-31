@@ -153,20 +153,27 @@ export function DiscoveryAgents() {
               ))}
             </div>
             <div className="text-xs font-semibold text-muted mt-4 mb-2">
-              Strategies (Product Finder query shapes) — <code className="font-mono">--strategy=all</code> unions + dedupes them
+              Strategies (Product Finder query shapes) — default <code className="font-mono">rank_drops_30d</code>;
+              <code className="font-mono"> --strategy=auto</code> short-circuits; <code className="font-mono">--strategy=all</code> runs every one (calibration)
             </div>
             <div className="grid grid-cols-1 gap-2 text-sm">
               {KEEPA_STRATEGIES.map((st) => (
                 <div key={st.name} className="flex items-start gap-2">
-                  <Badge tone="default">{st.name}</Badge>
-                  <span className="text-muted text-xs">{st.description}</span>
+                  <Badge tone={st.name === 'rank_drops_30d' ? 'good' : 'default'}>{st.name}</Badge>
+                  <span className="text-muted text-xs">
+                    {st.description}
+                    {st.name === 'rank_drops_30d' ? ' (default — most token-efficient)' : ''}
+                  </span>
                 </div>
               ))}
             </div>
             <p className="text-muted text-xs mt-3">
-              Discover: <code className="font-mono">npm run run:keepa-discovery -- --profile=exploratory --strategy=all --limit=10 --preflight-amazon</code>.
-              Use <code className="font-mono">exploratory</code> (widest, diagnostics-only) to maximize candidate volume while debugging coverage.
-              A token guard blocks expensive runs when the estimate exceeds <code className="font-mono">--max-keepa-tokens</code>
+              Default run (efficient): <code className="font-mono">npm run run:keepa-discovery -- --profile=exploratory --limit=10 --preflight-amazon</code> (uses <code className="font-mono">rank_drops_30d</code>).
+              <code className="font-mono"> --strategy=auto</code> starts with <code className="font-mono">rank_drops_30d</code> and only adds fallback strategies if the limit isn't met, stopping early.
+              <code className="font-mono"> --strategy=all</code> stays for calibration. Each run prints a per-strategy efficiency table
+              (tokens/accepted, tokens/exported, contribution %) and a recommended strategy/profile.
+              Use <code className="font-mono">exploratory</code> (widest, diagnostics-only) to maximize volume while debugging coverage.
+              A token guard blocks runs whose estimate exceeds <code className="font-mono">--max-keepa-tokens</code>
               (env <code className="font-mono">KEEPA_DISCOVERY_MAX_TOKENS_PER_RUN</code>); override with <code className="font-mono">--force</code>.
               Calibrate: <code className="font-mono">npm run calibrate:keepa-discovery -- --limit=10</code>.
               Reports saved to <code className="font-mono">reports/</code>; filter losses use <code className="font-mono">KEEPA_*</code> reason codes.

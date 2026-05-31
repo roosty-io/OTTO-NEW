@@ -67,10 +67,10 @@ export const DISCOVERY_AGENTS: DiscoveryAgentInfo[] = [
     implemented: 'real',
     dataSource: 'Keepa API (/query Product Finder + /product stats)',
     requiresCredentials: 'KEEPA_API_KEY (+ eBay creds for demand scoring)',
-    testCommand: 'run:keepa-discovery --profile=… --strategy=all|<name> [--max-keepa-tokens=N] [--force]; calibrate:keepa-discovery',
-    lastSuccessfulRun: 'Real endpoint confirmed (12 ASINs, 80 tokens); profiles + multi-strategy Product Finder added',
+    testCommand: 'run:keepa-discovery --profile=… [--strategy=rank_drops_30d(default)|auto|all|<name>] [--max-keepa-tokens=N] [--force]; calibrate:keepa-discovery',
+    lastSuccessfulRun: 'Real endpoint confirmed; multi-strategy + efficiency analysis (default=rank_drops_30d, auto short-circuit)',
     priority: null,
-    notes: 'LIVE. ASIN-native: pulls rising-rank Amazon products from Keepa, bypasses the ASIN resolver, routes through the full validation chain. Profiles (strict/balanced/broad/exploratory) and Product Finder strategies (rank_drops_30d, rank_drops_90d, current_rank_only, category_movers, price_band_movers, review_quality_movers, all) tune discovery input only — gates unchanged. --strategy=all unions + dedupes strategies to raise candidate volume; a token guard (--max-keepa-tokens, env KEEPA_DISCOVERY_MAX_TOKENS_PER_RUN, override with --force) stops expensive runs. Filter losses are reported with KEEPA_* reason codes. If the plan lacks Product Finder it reports KEEPA_PLAN_LIMITATION/KEEPA_ENDPOINT_UNAVAILABLE instead of faking candidates.',
+    notes: 'LIVE. ASIN-native: pulls rising-rank Amazon products from Keepa, bypasses the ASIN resolver, routes through the full validation chain. Default strategy is rank_drops_30d (calibration showed it produced all accepted candidates while others spent tokens for zero output). --strategy=auto starts with rank_drops_30d and only adds fallback strategies if the candidate limit is not met, stopping early; --strategy=all runs every strategy for calibration. A per-strategy efficiency report (tokens/accepted, tokens/exported, contribution %) plus a recommendation engine surface which strategies to keep. Token guard (--max-keepa-tokens, env KEEPA_DISCOVERY_MAX_TOKENS_PER_RUN, override --force) stops expensive runs. Strategies/profiles tune discovery input only — gates unchanged. Filter losses use KEEPA_* reason codes; a plan without Product Finder reports KEEPA_PLAN_LIMITATION/KEEPA_ENDPOINT_UNAVAILABLE instead of faking candidates.',
   },
   {
     name: 'Amazon Best Sellers',

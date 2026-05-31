@@ -31,6 +31,30 @@ debugging coverage. Example:_
 npm run run:keepa-discovery -- --profile=exploratory --strategy=all --limit=10 --preflight-amazon
 ```
 
+_Update 2026-05-31 (efficiency): a GCE `--strategy=all` run showed only
+`rank_drops_30d` produced accepted candidates while the other five strategies
+spent ~all the tokens (614 total, 54 Product Finder queries) for zero accepted
+output. Changes:_
+- **Default strategy is now `rank_drops_30d`** (single, most token-efficient).
+  `--strategy=all` remains available for calibration only.
+- **`--strategy=auto`**: starts with `rank_drops_30d` and only runs fallback
+  strategies if accepted candidates are still below the limit, stopping early
+  ("short-circuit"). `all` never short-circuits; `auto`/`fixed`/default do.
+- **Per-strategy efficiency report** (console + markdown): tokens consumed,
+  raw returned, unique ASINs, accepted, source-valid, demand, final, exported,
+  tokens-per-accepted, tokens-per-exported, and contribution %.
+- **Recommendation engine**: best single strategy, profile compared, strategies
+  to disable by default (spent tokens / zero accepted), and whether
+  `--strategy=all` is worthwhile (only when >1 strategy contributed).
+- Reports also list which strategies were **skipped** and why
+  (`enough_candidates` / `token_budget`).
+
+Efficiency-focused GCE tests:
+```
+npm run run:keepa-discovery -- --profile=exploratory --strategy=rank_drops_30d --limit=10 --preflight-amazon
+npm run run:keepa-discovery -- --profile=exploratory --strategy=auto --limit=10 --preflight-amazon
+```
+
 ## TL;DR
 
 - **Real discovery sources: `eBay Keyword Discovery` and
